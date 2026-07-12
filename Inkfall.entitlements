@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Developer ID / notarized distribution — NOT sandboxed. Inkfall types dictated
+	  text into other apps via the Accessibility API + synthetic keystrokes, which the
+	  App Sandbox forbids; there is deliberately no com.apple.security.app-sandbox key.
+
+	  Under the Hardened Runtime (required for notarization), microphone access needs
+	  this capability. Accessibility control of other apps is gated by the runtime TCC
+	  grant, not an entitlement, so nothing else is required here.
+	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

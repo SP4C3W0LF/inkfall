@@ -1,0 +1,23 @@
+# Build products
+.build/
+dist/
+work/
+
+# XcodeGen output — regenerate with `xcodegen generate`
+Inkfall.xcodeproj/
+Generated/
+
+# Xcode / SwiftPM user state
+xcuserdata/
+.swiftpm/
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Internal — kept local, not part of the public repo
+DESIGN.md
+RELEASING.md
+project.local.yml
+scripts/*
+!scripts/check_normalizer.swift
