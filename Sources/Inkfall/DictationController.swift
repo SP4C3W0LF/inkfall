@@ -42,6 +42,9 @@ final class DictationController {
     private var readiness: DictationState {
         if !config.hasWhisperConfiguration { return .needsModel }
         if AVCaptureDevice.authorizationStatus(for: .audio) == .denied { return .needsMicrophone }
+        // Not a blocker — dictation still works via the clipboard — but the menu
+        // must not say plain "Ready" while typing into apps can't work.
+        if !AXIsProcessTrusted() { return .readyNoAccessibility }
         return .idle
     }
 

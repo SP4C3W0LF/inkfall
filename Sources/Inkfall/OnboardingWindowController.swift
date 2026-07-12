@@ -38,6 +38,9 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private var pollTimer: Timer?
     private var didAutoDownloadModel = false
     private var didPromptPermissions = false
+    /// Last observed (microphone, accessibility) grant pair, for re-rendering
+    /// the Ready page's note the moment a grant flips.
+    private var lastKnownGrants: (Bool, Bool)?
     private var tryItField: NSTextField?
 
     init(config: InkfallConfig, onSave: @escaping (InkfallConfig) -> Void, onFinished: @escaping () -> Void) {
@@ -391,12 +394,41 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func readyContent() -> NSView {
-        column([
+        var views: [NSView] = [
             eyebrow("all set"),
             title("You're ready to go."),
-            subtitle("Inkfall lives in your menu bar. Press \(HotkeyDisplay.current) anywhere to dictate."),
-            SettingsControls.bodyLabel("Reopen Settings any time with ⌘, from the menu bar. \u{201C}Copy last result\u{201D} lives there too. Enjoy dictating — privately.")
-        ])
+            subtitle("Inkfall lives in your menu bar. Press \(HotkeyDisplay.current) anywhere to dictate.")
+        ]
+        if let note = pendingPermissionsNote() {
+            views.append(permissionsNote(note))
+        }
+        views.append(SettingsControls.bodyLabel("Reopen Settings any time with ⌘, from the menu bar. \u{201C}Copy last result\u{201D} lives there too. Enjoy dictating — privately."))
+        return column(views)
+    }
+
+    /// One calm sentence on the Ready page when something is still ungranted —
+    /// finishing is never blocked, but "ready" must not overpromise.
+    private func pendingPermissionsNote() -> String? {
+        let micOK = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        let axOK = AXIsProcessTrusted()
+        switch (micOK, axOK) {
+        case (true, true):
+            return nil
+        case (false, true):
+            return "The microphone is still off — I'll ask again the moment you start dictating."
+        case (true, false):
+            return "Accessibility is still off — your words will land on the clipboard until you grant it."
+        case (false, false):
+            return "Microphone and Accessibility are still off — grant them from the menu bar whenever you're ready."
+        }
+    }
+
+    private func permissionsNote(_ text: String) -> NSView {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = InkfallDesign.ember
+        label.preferredMaxLayoutWidth = 400
+        return label
     }
 
     // MARK: Content helpers
@@ -535,6 +567,13 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         micStatus.set(micOK ? "Granted" : "Not granted", tone: micOK ? .ok : .warning)
         let axOK = AXIsProcessTrusted()
         accessibilityStatus.set(axOK ? "Granted" : "Not granted", tone: axOK ? .ok : .warning)
+
+        // The Ready page shows a note about ungranted permissions; re-render it
+        // if a grant flips while the user is looking at it.
+        if step == .ready, let last = lastKnownGrants, last != (micOK, axOK) {
+            renderStep()
+        }
+        lastKnownGrants = (micOK, axOK)
     }
 
     /// Proactively fire the OS permission prompts once when the permissions page
