@@ -9,6 +9,9 @@ enum DictationState: Equatable {
     case idle
     case needsMicrophone
     case needsAccessibility
+    /// Resting state: dictation works, but without Accessibility results land on
+    /// the clipboard instead of being typed into the active app.
+    case readyNoAccessibility
     case needsModel
     case downloading(progress: Double, detail: String)
     case listening
@@ -68,7 +71,7 @@ extension DictationState {
     /// The HUD model for this state, or nil when no overlay should show.
     var hud: HUDModel? {
         switch self {
-        case .idle:
+        case .idle, .readyNoAccessibility:
             return nil
 
         case .needsMicrophone:
@@ -83,7 +86,7 @@ extension DictationState {
             return HUDModel(
                 symbol: "hand.raised.fill", tint: InkfallDesign.ember,
                 title: "One more permission to type",
-                detail: "Accessibility lets me place text into your app. That's how paste works.",
+                detail: "Your words are on the clipboard — paste with ⌘V. Accessibility lets me type them in next time.",
                 actionLabel: "Open Accessibility Settings", action: .openAccessibility,
                 emberAction: true, persistent: true)
 
@@ -185,7 +188,7 @@ extension DictationState {
             return "mic.fill"
         case .transcribing, .polishing, .inserting:
             return "ellipsis"
-        case .needsMicrophone, .needsAccessibility, .needsModel, .downloadFailed:
+        case .needsMicrophone, .needsAccessibility, .readyNoAccessibility, .needsModel, .downloadFailed:
             return "waveform.badge.exclamationmark"
         default:
             return "waveform"
@@ -198,6 +201,7 @@ extension DictationState {
         case .idle: return "Ready"
         case .needsMicrophone: return "Microphone access needed"
         case .needsAccessibility: return "Accessibility access needed"
+        case .readyNoAccessibility: return "Ready — grant Accessibility to type into apps"
         case .needsModel: return "Add a speech model to start"
         case .downloading: return "Downloading speech model…"
         case .listening, .silence: return "Listening…"
