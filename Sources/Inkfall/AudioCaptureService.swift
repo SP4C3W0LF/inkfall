@@ -102,15 +102,24 @@ final class AudioCaptureService: @unchecked Sendable {
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         let inputRate = inputFormat.sampleRate
-        // macOS 27 deprecated installTap(onBus:…block:) in favor of the throwing
-        // installAudioTap, whose block hands back a Sendable read-only buffer.
-        try input.installAudioTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-            self?.append(buffer: buffer, inputRate: inputRate)
+        if #available(macOS 27.0, *) {
+            // macOS 27 deprecated installTap(onBus:…block:) in favor of the throwing
+            // installAudioTap, whose block hands back a Sendable read-only buffer.
+            try input.installAudioTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
+                self?.append(buffer: buffer, inputRate: inputRate)
+            }
+        } else {
+            // macOS 26 (Tahoe): the classic tap. Its buffer isn't Sendable, so the
+            // callback copies channel 0 into a [Float] before anything escapes.
+            input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
+                self?.append(buffer: buffer, inputRate: inputRate)
+            }
         }
 
         state.tapInstalled = true
     }
 
+    @available(macOS 27.0, *)
     private func append(buffer: AVReadOnlyAudioPCMBuffer, inputRate: Double) {
         guard case .float(let span) = buffer.channelData(0) else { return }
         let frameCount = min(buffer.frameLength, span.count)
@@ -135,6 +144,38 @@ final class AudioCaptureService: @unchecked Sendable {
 
         // Snapshot to an immutable value before it crosses into the audio queue,
         // so Swift 6 concurrency checking is satisfied (no captured `var`).
+        let downsampled = samples
+        publishLevel(for: downsampled)
+
+        queue.async {
+            guard self.state.isRecording else { return }
+            self.state.recordedSamples.append(contentsOf: downsampled)
+        }
+    }
+
+    /// Tahoe fallback: same downsampling as the macOS 27 path, reading the classic
+    /// buffer's float channel pointer (valid only inside the tap callback; only the
+    /// resulting [Float] leaves scope).
+    private func append(buffer: AVAudioPCMBuffer, inputRate: Double) {
+        guard let channel = buffer.floatChannelData?[0] else { return }
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else { return }
+
+        var samples: [Float] = []
+        if abs(inputRate - targetSampleRate) < 1 {
+            samples.reserveCapacity(frameCount)
+            for index in 0..<frameCount { samples.append(channel[index]) }
+        } else {
+            let ratio = inputRate / targetSampleRate
+            let outputCount = Int(Double(frameCount) / ratio)
+            guard outputCount > 0 else { return }
+            samples.reserveCapacity(outputCount)
+            for index in 0..<outputCount {
+                let sourceIndex = min(frameCount - 1, Int(Double(index) * ratio))
+                samples.append(channel[sourceIndex])
+            }
+        }
+
         let downsampled = samples
         publishLevel(for: downsampled)
 

@@ -5,7 +5,9 @@ import PackageDescription
 let package = Package(
     name: "Inkfall",
     platforms: [
-        .macOS("27.0")
+        // Runs on macOS 26 (Tahoe) and later; building still needs the macOS 27 SDK
+        // for the availability-gated installAudioTap path in AudioCaptureService.
+        .macOS("26.0")
     ],
     products: [
         .executable(name: "Inkfall", targets: ["Inkfall"])

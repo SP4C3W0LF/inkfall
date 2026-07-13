@@ -2,7 +2,7 @@ name: Inkfall
 options:
   bundleIdPrefix: com.wasteland
   deploymentTarget:
-    macOS: "27.0"
+    macOS: "26.0"
   createIntermediateGroups: true
   groupSortPosition: top
 
@@ -15,7 +15,7 @@ targets:
   Inkfall:
     type: application
     platform: macOS
-    deploymentTarget: "27.0"
+    deploymentTarget: "26.0"
     sources:
       - path: Sources/Inkfall
       - path: Resources/Assets.xcassets
@@ -26,8 +26,8 @@ targets:
       - sdk: AVFoundation.framework
       - sdk: ApplicationServices.framework
       - sdk: Carbon.framework
-      # On-device rewrite via Apple Intelligence (guaranteed present at the macOS 27
-      # deployment minimum, so linked normally).
+      # On-device rewrite via Apple Intelligence (FoundationModels ships with
+      # macOS 26, the deployment minimum, so linked normally).
       - sdk: FoundationModels.framework
     info:
       path: Generated/Info.plist
