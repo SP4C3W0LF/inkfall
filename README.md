@@ -21,7 +21,7 @@ Your voice and your text never leave your machine. Dictation makes zero network 
 2. Drag **Inkfall** to Applications and open it.
 3. On first run, grant **Microphone** access and enable Inkfall under **System Settings ▸ Privacy & Security ▸ Accessibility** (required to type dictated text into other apps).
 
-**Requirements:** an Apple silicon Mac running macOS 27 or later. The rewrite step additionally requires Apple Intelligence to be enabled (it falls back to rule-based cleanup when it isn't).
+**Requirements:** an Apple silicon Mac running macOS 26 (Tahoe) or later. The rewrite step additionally requires Apple Intelligence to be enabled (it falls back to rule-based cleanup when it isn't).
 
 ## Usage
 
@@ -36,6 +36,8 @@ cd inkfall
 xcodegen generate        # creates Inkfall.xcodeproj (gitignored)
 open Inkfall.xcodeproj
 ```
+
+Building requires the macOS 27 SDK (Xcode 27): the app runs on macOS 26, but its audio capture uses the macOS 27 tap API behind an availability check, falling back to the classic tap on Tahoe.
 
 For quick iteration without Xcode:
 
