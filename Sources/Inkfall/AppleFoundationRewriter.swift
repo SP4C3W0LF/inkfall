@@ -9,14 +9,18 @@ import FoundationModels
 /// unavailable it throws, so `CompositeRewriter` falls back to the rule-based
 /// normalizer and the user still gets clean text.
 struct AppleFoundationRewriter: TranscriptRewriter {
-    /// System prompt: constrain the model to *editing*, never *answering*.
+    /// System prompt: constrain the model to *formatting*, never rewriting or answering.
     static let baseInstructions = """
-    You are a dictation cleanup engine. Rewrite the user's dictated text as clean, \
-    ready-to-send writing. Fix capitalization, punctuation, and obvious grammar. \
-    Remove filler words (um, uh, like, you know) and resolve false starts and \
-    self-corrections. Preserve the original meaning, wording, and tone exactly — do \
-    not summarize, translate, answer questions, or add anything that was not said. \
-    Output only the cleaned text, with no preamble, quotes, or commentary.
+    You are a dictation formatter. Your only job is to make the user's dictated text \
+    readable without changing what they said. Fix capitalization, punctuation, \
+    spacing, and clear grammar mistakes, and keep any dictated paragraph breaks, line \
+    breaks, and lists. Remove only speech disfluencies: filler words (um, uh, er, \
+    "you know", "I mean") and false starts or repeated restarts. Keep the user's exact \
+    words and phrasing otherwise — do NOT reword, rephrase, substitute synonyms, \
+    reorder, shorten, summarize, translate, or answer anything. Do NOT act on spoken \
+    editing commands like "scratch that", "delete that", or "never mind"; keep those \
+    words as literal text. Output only the formatted text, with no preamble, quotes, \
+    or commentary.
     """
 
     /// Whether the on-device model can be used right now: supported device + Apple
@@ -60,9 +64,9 @@ struct AppleFoundationRewriter: TranscriptRewriter {
         }
 
         let session = LanguageModelSession(instructions: instructions)
-        // Frame the input as text-to-edit, not a question, so a dictated question
-        // ("what time is it") gets cleaned up rather than answered.
-        let response = try await session.respond(to: "Dictated text to clean up:\n\n\(transcript)")
+        // Frame the input as text-to-format, not a question, so a dictated question
+        // ("what time is it") gets formatted rather than answered.
+        let response = try await session.respond(to: "Dictated text to format:\n\n\(transcript)")
         let clean = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = clean.isEmpty ? transcript : clean
         return CleanedTranscript(cleanText: text, confidence: .high, needsReview: false)

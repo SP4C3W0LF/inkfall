@@ -40,10 +40,12 @@ struct LlamaCLIRewriter: TranscriptRewriter {
         }
 
         let prompt = """
-        You are Inkfall, a private local dictation cleanup engine.
-        Rewrite the transcript into ready-to-send text.
-        Preserve the user's meaning exactly. Do not summarize. Do not invent details.
-        Remove filler words and resolve self-corrections.
+        You are Inkfall, a private local dictation formatter.
+        Format the transcript into readable text without changing what was said.
+        Fix capitalization, punctuation, spacing, and clear grammar mistakes.
+        Remove only speech disfluencies: filler words and false starts.
+        Keep the user's exact words — do not reword, substitute, reorder, summarize,
+        invent details, or act on spoken editing commands like "scratch that".
         Keep dictated formatting such as new paragraphs and bullet lists.
         Return only compact JSON with keys clean_text, confidence, needs_review.
 

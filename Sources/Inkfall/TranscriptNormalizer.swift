@@ -11,8 +11,8 @@ struct TranscriptNormalizer: Sendable {
 
     func normalize(_ input: String, vocabulary: [String]) -> String {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        text = applyCorrectionCommands(text)
         text = applyFormattingCommands(text)
+        text = applyScratchThat(text)
         text = removeFillers(text)
         text = applyVocabulary(text, vocabulary: vocabulary)
         text = collapseWhitespace(text)
@@ -27,42 +27,36 @@ struct TranscriptNormalizer: Sendable {
         return text
     }
 
-    private func applyCorrectionCommands(_ input: String) -> String {
-        var text = input
-
-        if let range = text.range(of: #"(?i)\b(scratch that|delete that|never mind)\b"#, options: .regularExpression) {
-            text = String(text[range.upperBound...])
-        }
-
-        text = text.replacingOccurrences(
-            of: #"(?i)\bno actually\b"#,
-            with: "actually",
-            options: .regularExpression
-        )
-
-        text = text.replacingOccurrences(
-            of: #"(?i)\bmake that\b"#,
-            with: "actually",
-            options: .regularExpression
-        )
-
-        if let range = text.range(of: #"(?i)\bactually\b"#, options: .regularExpression) {
-            let before = text[..<range.lowerBound]
-            let after = text[range.upperBound...]
-            if before.count < 80 {
-                text = String(after)
-            }
-        }
-
-        return text
-    }
-
     private func applyFormattingCommands(_ input: String) -> String {
         var text = input
         text = text.replacingOccurrences(of: #"(?i)\bnew paragraph\b"#, with: "\n\n", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?i)\bnew line\b"#, with: "\n", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?i)\bbullet list\b"#, with: "\n- ", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?i)\bnext bullet\b"#, with: "\n- ", options: .regularExpression)
+        return text
+    }
+
+    /// Handles spoken "scratch that" / "delete that" / "never mind" as a bounded,
+    /// deterministic deletion: it erases only the current sentence — back to the
+    /// previous ., !, ?, or line break — never anything before that. Pure text
+    /// surgery run before any model sees the transcript, so nothing gets reworded.
+    private func applyScratchThat(_ input: String) -> String {
+        var text = input
+        let command = #"(?i)\b(?:scratch that|delete that|never mind)\b[.,!?;:]*"#
+        while let cmd = text.range(of: command, options: .regularExpression) {
+            // Start of the sentence being scratched: just past the previous
+            // sentence terminator or newline (or the string start if none).
+            let boundary = text[..<cmd.lowerBound]
+                .lastIndex(where: { ".!?\n".contains($0) })
+                .map { text.index(after: $0) } ?? text.startIndex
+            // Swallow trailing spaces/tabs after the command, then bridge the gap
+            // with a single space; collapseWhitespace tidies up the rest.
+            var after = cmd.upperBound
+            while after < text.endIndex, text[after] == " " || text[after] == "\t" {
+                after = text.index(after: after)
+            }
+            text.replaceSubrange(boundary..<after, with: " ")
+        }
         return text
     }
 
