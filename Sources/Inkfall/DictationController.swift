@@ -14,6 +14,7 @@ final class DictationController {
     private var lastResult: String?
     private var retainedClip: AudioClip?
     private var silenceTimer: Timer?
+    private var holdSafetyTimer: Timer?
     private var lastLoudAt: Date = .distantPast
 
     var onStateChange: ((DictationState) -> Void)?
@@ -74,6 +75,56 @@ final class DictationController {
             await startRecording()
         }
     }
+
+    // MARK: Hold to talk
+
+    /// Hotkey went DOWN in hold mode. Idempotent — Carbon repeats a held hotkey's
+    /// pressed event on some layouts, and a second start would throw away the
+    /// audio captured so far.
+    func beginHold() async {
+        guard !state.isRecording, !isBusy else { return }
+        await startRecording()
+        guard state.isRecording else { return }   // start can fail on permissions
+        startHoldSafetyTimer()
+    }
+
+    /// Hotkey came UP in hold mode. Also idempotent: a release with nothing
+    /// recording is the normal case after the safety timer has already fired.
+    func endHold() async {
+        stopHoldSafetyTimer()
+        guard state.isRecording else { return }
+        await stopRecording()
+    }
+
+    /// The one failure mode hold-to-talk adds: a release event that never arrives
+    /// (the key held across a focus change, the hotkey rebound mid-press) would
+    /// otherwise record until the disk filled. Nothing else in this controller
+    /// stops a recording on its own — `tickSilence` only changes what the HUD
+    /// says, it has never auto-stopped — so this timer is the only backstop.
+    ///
+    /// It STOPS AND TRANSCRIBES rather than discarding. Inkfall's rule is that the
+    /// user's words are never lost; a stuck key should cost a clumsy transcript,
+    /// not silence.
+    private func startHoldSafetyTimer() {
+        stopHoldSafetyTimer()
+        let timer = Timer(timeInterval: Self.holdSafetyLimit, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.state.isRecording else { return }
+                await self.stopRecording()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        holdSafetyTimer = timer
+    }
+
+    private func stopHoldSafetyTimer() {
+        holdSafetyTimer?.invalidate()
+        holdSafetyTimer = nil
+    }
+
+    /// Two minutes. Long enough that nobody dictating a real paragraph ever meets
+    /// it, short enough that a stuck key is noticed in the same sitting.
+    private static let holdSafetyLimit: TimeInterval = 120
 
     private func startRecording() async {
         guard config.hasWhisperConfiguration else {

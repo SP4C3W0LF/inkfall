@@ -8,10 +8,10 @@ Your voice and your text never leave your machine. Dictation makes zero network 
 
 - **Zero-setup speech recognition** — on-device Whisper via [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML). Works out of the box; pick larger models in Settings if you want more accuracy.
 - **On-device rewrite** — optional cleanup of fillers and phrasing through Apple Intelligence (Foundation Models), with a deterministic rule-based fallback when it's unavailable.
-- **Global hotkey** — default `⌥ Space`, fully rebindable with a click-to-record shortcut field that warns about system-shortcut conflicts.
+- **Global hotkey** — default `⌥ Space`, fully rebindable with a click-to-record shortcut field that warns about system-shortcut conflicts. Choose whether it **taps to toggle** or **holds to talk**.
 - **Quiet by design** — a monochrome menu-bar waveform and a floating HUD that shows recording, transcribing, and polishing as they actually happen.
 - **Words are never lost** — every transcript is copied to the clipboard before insertion is attempted, so a failed paste degrades to a simple `⌘V`.
-- **Custom vocabulary and language** — bias cleanup toward your names and jargon.
+- **Custom vocabulary and language** — your names and jargon condition the recogniser itself, so Whisper hears the word rather than being corrected afterwards, and the same list guides the cleanup pass.
 - **Bring your own engine (advanced)** — plug in a local `whisper-cli` / `llama-cli` and GGUF models instead of the built-in engines.
 - **Launch at login**, configurable HUD position, and a settings window that never makes you edit a config file.
 

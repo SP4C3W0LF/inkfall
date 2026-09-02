@@ -1,8 +1,15 @@
 import Foundation
 
-enum DictationMode: String, Codable, Sendable {
+enum DictationMode: String, Codable, Sendable, CaseIterable {
     case tap    // tap to toggle
     case hold   // hold to talk
+
+    var displayName: String {
+        switch self {
+        case .tap: return "Tap to toggle"
+        case .hold: return "Hold to talk"
+        }
+    }
 }
 
 enum SpeechEngine: String, Codable, Sendable {
