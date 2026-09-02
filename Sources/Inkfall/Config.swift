@@ -6,8 +6,8 @@ enum DictationMode: String, Codable, Sendable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .tap: return "Tap to toggle"
-        case .hold: return "Hold to talk"
+        case .tap: return "Tap the shortcut"
+        case .hold: return "Hold left Option"
         }
     }
 }

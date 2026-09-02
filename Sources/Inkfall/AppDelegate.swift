@@ -7,6 +7,8 @@ import Carbon
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKeyService: HotKeyService?
+    /// Only running in hold mode — see `applyTriggerForMode`.
+    private var holdMonitor: ModifierHoldMonitor?
     private var controller: DictationController?
     private var settingsWindowController: SettingsWindowController?
     private var onboardingWindowController: OnboardingWindowController?
@@ -41,7 +43,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             config: config,
             onSave: { [weak self] updated in self?.applyConfig(updated) },
             onHotkeyRecording: { [weak self] recording in
-                if recording { self?.hotKeyService?.suspend() } else { self?.hotKeyService?.resume() }
+                guard let self else { return }
+                if recording {
+                    self.hotKeyService?.suspend()
+                    // The recorder wants the user to press modifiers. Without this,
+                    // reaching for ⌥ while choosing a shortcut would open the mic.
+                    self.holdMonitor?.stop()
+                } else {
+                    self.hotKeyService?.resume()
+                    self.applyTriggerForMode(self.currentConfig)
+                }
             }
         )
         // Live preview: flash the HUD where the user is pointing while they choose.
@@ -79,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         hotKeyService?.register()
+        applyTriggerForMode(config)
 
         NotificationCenter.default.addObserver(
             self,
@@ -123,6 +135,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return DictationPipeline(transcriber: transcriber, normalizer: normalizer, rewriter: rewriter)
     }
 
+    /// Which input actually starts a dictation, decided by mode. The two triggers
+    /// are mutually exclusive on purpose: ⌥Space begins by holding Option, so
+    /// running both would mean reaching for the shortcut trips the bare-modifier
+    /// hold first and the shortcut never resolves.
+    private func applyTriggerForMode(_ config: InkfallConfig) {
+        switch config.mode {
+        case .tap:
+            holdMonitor?.stop()
+            holdMonitor = nil
+            hotKeyService?.resume()
+
+        case .hold:
+            // A global NSEvent monitor without Accessibility receives NOTHING and
+            // reports no error — hold-to-talk would simply appear dead, which is the
+            // failure mode this app refuses everywhere else. Fall back to holding the
+            // regular shortcut, which is Carbon and needs no grant, while the menu
+            // goes on saying Accessibility is missing.
+            guard AXIsProcessTrusted() else {
+                holdMonitor?.stop()
+                holdMonitor = nil
+                hotKeyService?.resume()
+                return
+            }
+            hotKeyService?.suspend()
+            if holdMonitor == nil {
+                holdMonitor = ModifierHoldMonitor(
+                    onBegin: { [weak self] in
+                        Task { @MainActor in await self?.controller?.beginHold() }
+                    },
+                    onEnd: { [weak self] in
+                        Task { @MainActor in await self?.controller?.endHold() }
+                    }
+                )
+            }
+            holdMonitor?.start()
+        }
+    }
+
     /// Load the WhisperKit model in the background so the first dictation is fast.
     private func prewarmSpeechEngine(_ config: InkfallConfig) {
         guard config.speechEngine == .whisperKit else { return }
@@ -135,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let combo = config.hotKey
         HotkeyDisplay.current = combo.display
         hotKeyService?.update(keyCode: combo.keyCode, modifiers: combo.carbonModifiers)
+        applyTriggerForMode(config)
         settingsWindowController?.update(config: config)
         onboardingWindowController?.update(config: config)
         controller?.update(config: config, pipeline: Self.makePipeline(config: config, normalizer: normalizer))
@@ -310,6 +361,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             self.controller?.refreshReadiness()
             self.rebuildMenu()
+            // Accessibility may have just been granted in System Settings — this is
+            // the notification that fires on the way back. Re-deciding the trigger
+            // here is what upgrades hold mode from the ⌥Space fallback to left
+            // Option without a relaunch.
+            self.applyTriggerForMode(self.currentConfig)
         }
     }
 
