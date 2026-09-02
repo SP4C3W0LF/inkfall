@@ -249,8 +249,8 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
 
         return section("General", rows: [
             row("Shortcut", recorder, hint: "Click, then press a modifier + key. Save to apply."),
-            row("Shortcut acts", dictationModePopup,
-                hint: "Tap starts and a second tap stops. Hold records only while the keys are down."),
+            row("Dictation", dictationModePopup,
+                hint: "Tap uses the shortcut above, once to start and again to stop. Hold records while you hold the left Option key on its own."),
             row("Start up", launchAtLoginCheckbox, hint: "Open Inkfall automatically when you log in."),
             row("Indicator", hudPositionPopup, hint: "Where the status bubble appears while you dictate."),
             SettingsControls.divider(),
