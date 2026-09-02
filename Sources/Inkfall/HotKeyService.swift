@@ -5,13 +5,25 @@ final class HotKeyService {
     private var keyCode: UInt32
     private var modifiers: UInt32
     private let handler: @Sendable () -> Void
+    /// Set only for hold-to-talk. Carbon delivers `kEventHotKeyReleased` as a
+    /// first-class event — Apple's own UIElementInspector sample registers for the
+    /// release ALONE — so push-to-talk needs no event tap and no Accessibility
+    /// grant, which matters here: Inkfall must still work when the user has only
+    /// granted the microphone.
+    private let releaseHandler: (@Sendable () -> Void)?
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
 
-    init(keyCode: UInt32, modifiers: UInt32, handler: @escaping @Sendable () -> Void) {
+    init(
+        keyCode: UInt32,
+        modifiers: UInt32,
+        handler: @escaping @Sendable () -> Void,
+        releaseHandler: (@Sendable () -> Void)? = nil
+    ) {
         self.keyCode = keyCode
         self.modifiers = modifiers
         self.handler = handler
+        self.releaseHandler = releaseHandler
     }
 
     func register() {
@@ -37,19 +49,31 @@ final class HotKeyService {
 
     private func installEventHandlerIfNeeded() {
         guard eventHandler == nil else { return }
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        // Register for BOTH kinds unconditionally, and decide in the callback. The
+        // alternative — installing the release spec only when a releaseHandler
+        // exists — would need the handler torn down and rebuilt whenever the user
+        // switches dictation mode in Settings, and this service deliberately
+        // survives rebinds (see `update`).
+        var eventTypes = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))
+        ]
         let selfPointer = Unmanaged.passUnretained(self).toOpaque()
 
         InstallEventHandler(
             GetApplicationEventTarget(),
-            { _, _, userData in
+            { _, event, userData in
                 guard let userData else { return noErr }
                 let service = Unmanaged<HotKeyService>.fromOpaque(userData).takeUnretainedValue()
-                service.handler()
+                if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
+                    service.releaseHandler?()
+                } else {
+                    service.handler()
+                }
                 return noErr
             },
-            1,
-            &eventType,
+            eventTypes.count,
+            &eventTypes,
             selfPointer,
             &eventHandler
         )

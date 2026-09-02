@@ -53,9 +53,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let combo = config.hotKey
         HotkeyDisplay.current = combo.display
-        hotKeyService = HotKeyService(keyCode: combo.keyCode, modifiers: combo.carbonModifiers) { [weak self] in
-            Task { @MainActor in await self?.controller?.toggleRecording() }
-        }
+        // Both handlers are installed once and branch on the CURRENT mode, rather
+        // than the service being rebuilt when the user switches modes in Settings.
+        // `applyConfig` only calls `update(keyCode:modifiers:)`, which deliberately
+        // keeps the installed event handler alive — swapping closures there would
+        // mean tearing that down and is a second way for the hotkey to end up
+        // unregistered.
+        hotKeyService = HotKeyService(
+            keyCode: combo.keyCode,
+            modifiers: combo.carbonModifiers,
+            handler: { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    switch self.currentConfig.mode {
+                    case .tap:  await self.controller?.toggleRecording()
+                    case .hold: await self.controller?.beginHold()
+                    }
+                }
+            },
+            releaseHandler: { [weak self] in
+                Task { @MainActor in
+                    guard let self, self.currentConfig.mode == .hold else { return }
+                    await self.controller?.endHold()
+                }
+            }
+        )
         hotKeyService?.register()
 
         NotificationCenter.default.addObserver(

@@ -23,16 +23,56 @@ actor WhisperKitEngine {
         }
     }
 
-    func transcribe(samples: [Float], model: String, language: String?) async throws -> String {
+    func transcribe(
+        samples: [Float],
+        model: String,
+        language: String?,
+        vocabulary: [String]
+    ) async throws -> String {
         let kit = try await pipe(for: model)
-        let options: DecodingOptions
+        var options: DecodingOptions
         if let language {
             options = DecodingOptions(language: language)
         } else {
             options = DecodingOptions(detectLanguage: true)
         }
+        if let prompt = Self.promptTokens(for: vocabulary, tokenizer: kit.tokenizer) {
+            options.promptTokens = prompt
+            options.usePrefillPrompt = true
+        }
         let results = try await kit.transcribe(audioArray: samples, decodeOptions: options)
         return results.map { $0.text }.joined(separator: " ")
+    }
+
+    /// Condition the decoder on the user's custom vocabulary so Whisper HEARS the
+    /// word, instead of mishearing it and having the normalizer patch the spelling
+    /// afterwards. String replacement can only fix a term the model got nearly
+    /// right; it cannot recover "cobble mon" → "Cobblemon" reliably, and it never
+    /// helps the rewrite pass, which is reasoning over already-wrong text.
+    ///
+    /// `promptTokens`, NOT `prefixTokens`. Both bias the decoder, but prefix tokens
+    /// land AFTER `<|startoftranscript|>` and are therefore inside the slice
+    /// WhisperKit decodes into the returned text — using them would paste the
+    /// glossary itself into the user's document. Prompt tokens sit before that
+    /// marker and are cut off. This is the single detail that makes the feature
+    /// safe rather than embarrassing.
+    ///
+    /// Two behaviours worth knowing: the leading space is load-bearing (BPE
+    /// tokenizes a word differently at a word boundary), and WhisperKit trims an
+    /// over-long prompt with `.suffix(111)` — it drops the EARLIEST terms, so the
+    /// end of the list is the part that survives.
+    private static func promptTokens(for vocabulary: [String], tokenizer: WhisperTokenizer?) -> [Int]? {
+        guard let tokenizer else { return nil }
+        let terms = vocabulary
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !terms.isEmpty else { return nil }
+
+        let tokens = tokenizer
+            .encode(text: " " + terms.joined(separator: ", "))
+            // Special tokens in a prompt corrupt the decoder's control sequence.
+            .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+        return tokens.isEmpty ? nil : tokens
     }
 
     /// Loads (downloading if needed) and caches the model. Concurrent callers —
@@ -70,8 +110,9 @@ actor WhisperKitEngine {
 }
 
 /// On-device transcription via WhisperKit (Apple Neural Engine). The default engine
-/// — no external CLI or model files required. Custom vocabulary is still applied by
-/// the downstream deterministic normalizer.
+/// — no external CLI or model files required. Custom vocabulary now conditions the
+/// decoder here as well as being enforced by the downstream normalizer: biasing
+/// first and correcting second beats correcting alone.
 struct WhisperKitTranscriber: SpeechTranscriber {
     let model: String
     let language: String
@@ -81,7 +122,8 @@ struct WhisperKitTranscriber: SpeechTranscriber {
         let raw = try await WhisperKitEngine.shared.transcribe(
             samples: audioClip.samples,
             model: model,
-            language: requested
+            language: requested,
+            vocabulary: context.vocabulary
         )
         let cleaned = raw
             .replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)

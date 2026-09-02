@@ -66,6 +66,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     // General
     private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch Inkfall at login", target: nil, action: nil)
     private let hudPositionPopup = NSPopUpButton()
+    private let dictationModePopup = NSPopUpButton()
     /// Called when the user changes the HUD-position picker, so the app can flash a
     /// live preview of the indicator at that spot.
     var onPreviewHUDPosition: ((HUDPosition) -> Void)?
@@ -240,15 +241,28 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         hudPositionPopup.action = #selector(hudPositionChanged)
         hudPositionPopup.selectItem(at: HUDPosition.allCases.firstIndex(of: config.hudPosition) ?? 1)
 
+        dictationModePopup.removeAllItems()
+        dictationModePopup.addItems(withTitles: DictationMode.allCases.map(\.displayName))
+        dictationModePopup.selectItem(at: DictationMode.allCases.firstIndex(of: config.mode) ?? 0)
+
         let privacy = SettingsControls.bodyLabel("Everything runs on this Mac. Audio, transcripts, and cleanup never leave the device — the only network use is a model download you start yourself.")
 
         return section("General", rows: [
             row("Shortcut", recorder, hint: "Click, then press a modifier + key. Save to apply."),
+            row("Shortcut acts", dictationModePopup,
+                hint: "Tap starts and a second tap stops. Hold records only while the keys are down."),
             row("Start up", launchAtLoginCheckbox, hint: "Open Inkfall automatically when you log in."),
             row("Indicator", hudPositionPopup, hint: "Where the status bubble appears while you dictate."),
             SettingsControls.divider(),
             privacy
         ])
+    }
+
+    private func selectedDictationMode() -> DictationMode {
+        let index = dictationModePopup.indexOfSelectedItem
+        let all = DictationMode.allCases
+        guard index >= 0, index < all.count else { return config.mode }
+        return all[index]
     }
 
     private func selectedHUDPosition() -> HUDPosition {
@@ -660,6 +674,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         if hudPositionPopup.numberOfItems > 0 {
             hudPositionPopup.selectItem(at: HUDPosition.allCases.firstIndex(of: config.hudPosition) ?? 1)
         }
+        if dictationModePopup.numberOfItems > 0 {
+            dictationModePopup.selectItem(at: DictationMode.allCases.firstIndex(of: config.mode) ?? 0)
+        }
         pendingHotKey = config.hotKey
         hotkeyField?.setCombo(pendingHotKey)
         hotkeyField?.hasWarning = false
@@ -700,6 +717,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         updated.speechEngineRaw = selectedEngine().rawValue
         updated.rewriteEngineRaw = selectedRewriteEngine().rawValue
         updated.hudPositionRaw = selectedHUDPosition().rawValue
+        updated.dictationModeRaw = selectedDictationMode().rawValue
         if whisperKitModelPopup.numberOfItems > 0, let model = whisperKitModelPopup.titleOfSelectedItem {
             updated.whisperKitModel = model
         }
