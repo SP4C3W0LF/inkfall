@@ -118,10 +118,17 @@ final class ModifierHoldMonitor {
         armTimer = nil
     }
 
-    deinit {
-        // `stop()` is MainActor-isolated and deinit is not; remove the monitors
-        // directly. By this point nothing is listening for onEnd anyway.
-        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
-        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
-    }
+    // NO deinit. There was one, as a safety net that removed the monitors if this
+    // object were dropped while running, and Swift 6 rejects it: deinit is
+    // nonisolated, `NSEvent.addGlobalMonitorForEvents` returns `Any?`, and a
+    // nonisolated deinit may not touch a non-Sendable stored property of an
+    // actor-isolated type. Neither `@MainActor` on the deinit nor casting the
+    // token escapes that — the type genuinely is `Any?`.
+    //
+    // So teardown is an INVARIANT the owner keeps instead: `AppDelegate` calls
+    // `stop()` before it releases or replaces the monitor, in both places that
+    // happens (`applyTriggerForMode`'s .tap branch, and the shortcut recorder
+    // callback). Break that invariant and two NSEvent monitors leak for the life
+    // of the process — hence this comment where the guard used to be, rather than
+    // silently nothing.
 }
