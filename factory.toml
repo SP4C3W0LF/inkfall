@@ -1,0 +1,48 @@
+# Inkfall factory recipe (spec 4.6). macOS menu-bar app: `check` only (a Release compile). No iOS, no Duo, no ASC record;
+# releases go out through .github/workflows/release.yml (self-hosted tag-triggered DMG), which is out of this spec.
+#
+# Not carried over: scripts/check_normalizer.swift. It needs `swiftc Sources/Inkfall/TranscriptNormalizer.swift
+# scripts/check_normalizer.swift -o ...` (README.md line 66) and the runner's allowlist has no swiftc.
+# Wrapping it in a bash script under scripts/ would make it a recipe `static` entry; that is a follow-up for the app's owner.
+schema = 1
+
+[app]
+name = "inkfall"
+display = "Inkfall"
+default_branch = "main"
+spec = "project.yml"
+factory_min = "0.1"
+
+[toolchain]
+test = "release"
+archive = "release"
+devicehub = "release"
+allow_beta_testflight = false
+
+[[target]]
+id = "macos"
+platform = "macos"
+project = "Inkfall.xcodeproj"
+scheme = "Inkfall"
+configuration = "Release"
+destination = "platform=macOS,arch=arm64"
+bundle_ids = ["com.wasteland.Inkfall"]
+ships = false
+
+[devices]
+required = []                    # macOS only: no simulator kinds apply
+ipad = false
+watch = false
+
+[tour]
+kind = "smoke"
+
+[gates]
+release_compile = true
+nav_ui_paths = ["Sources/Inkfall/SettingsWindowController.swift", "Sources/Inkfall/OnboardingWindowController.swift",
+                "Sources/Inkfall/DictationHUDWindowController.swift", "project.yml"]
+view_globs = ["Sources/Inkfall/*WindowController.swift"]
+new_screen_patterns = ['NSWindow\(', 'NSPanel\(', 'NSHostingController']
+plist_keys = ["LSUIElement", "NSMicrophoneUsageDescription"]
+unsure_files = 40
+static = []
