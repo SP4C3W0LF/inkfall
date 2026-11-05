@@ -16,7 +16,7 @@ concurrency: release-${{ github.ref }}
 jobs:
   dry-run:
     if: github.repository == 'SP4C3W0LF/inkfall' && github.event_name == 'workflow_dispatch'
-    runs-on: macos-26
+    runs-on: xcode-27   # GitHub image label: one major Xcode per image (macOS 27, Apple Silicon)
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -37,7 +37,7 @@ jobs:
 
   release:
     if: github.repository == 'SP4C3W0LF/inkfall' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: macos-26
+    runs-on: xcode-27   # GitHub image label: one major Xcode per image (macOS 27, Apple Silicon)
     timeout-minutes: 90
     # The signing secrets live only in this environment, which is restricted to v* tags.
     environment: release
