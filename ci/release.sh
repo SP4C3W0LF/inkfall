@@ -10,8 +10,9 @@
 # Real releases read these from the environment (GitHub "release" environment secrets):
 #   DEVELOPER_ID_P12           base64 of a .p12 holding the "Developer ID Application" identity
 #   DEVELOPER_ID_P12_PASSWORD  its export password
-#   NOTARY_APPLE_ID            Apple ID used for notarization
-#   NOTARY_PASSWORD            an app-specific password for that Apple ID
+#   NOTARY_KEY_P8              App Store Connect API key (.p8 contents) used by notarytool
+#   NOTARY_KEY_ID              its key id
+#   NOTARY_ISSUER_ID           its issuer id
 # Nothing secret is written to the repo or printed; the temporary keychain is deleted on exit.
 #
 # Output: dist/Inkfall.dmg (release) or dist/Inkfall-dryrun.dmg (dry run).
@@ -55,7 +56,7 @@ trap cleanup EXIT
 if [[ "$MODE" == "--dry-run" ]]; then
   SIGN_ARGS=(CODE_SIGNING_ALLOWED=NO)
 else
-  for v in DEVELOPER_ID_P12 DEVELOPER_ID_P12_PASSWORD NOTARY_APPLE_ID NOTARY_PASSWORD; do
+  for v in DEVELOPER_ID_P12 DEVELOPER_ID_P12_PASSWORD NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID; do
     [[ -n "${!v:-}" ]] || { echo "✗ $v is not set (GitHub 'release' environment secret)" >&2; exit 1; }
   done
   command -v create-dmg >/dev/null || { echo "✗ create-dmg missing (brew install create-dmg)" >&2; exit 1; }
@@ -107,8 +108,11 @@ create-dmg --volname Inkfall --window-size 500 320 --icon-size 100 \
 
 codesign --force --sign "Developer ID Application" --keychain "$KC" "$DMG"
 echo "▸ Notarizing (uploads to Apple and waits)…"
-xcrun notarytool submit "$DMG" --apple-id "$NOTARY_APPLE_ID" --team-id "$TEAM_ID" \
-  --password "$NOTARY_PASSWORD" --wait
+NOTARY_KEY="$(mktemp -d)/notary.p8"
+printf '%s' "$NOTARY_KEY_P8" > "$NOTARY_KEY"
+xcrun notarytool submit "$DMG" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" \
+  --issuer "$NOTARY_ISSUER_ID" --wait
+rm -f "$NOTARY_KEY"
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
 spctl -a -t open --context context:primary-signature -vv "$DMG"
