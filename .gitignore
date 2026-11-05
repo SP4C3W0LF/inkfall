@@ -19,5 +19,6 @@ DerivedData/
 DESIGN.md
 RELEASING.md
 project.local.yml
+project.release.yml
 scripts/*
 !scripts/check_normalizer.swift

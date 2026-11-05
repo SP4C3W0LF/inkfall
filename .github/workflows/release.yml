@@ -1,14 +1,12 @@
 name: Release
 
+# Builds Inkfall on a GitHub-hosted Mac (free for public repos), so a release no longer
+# waits for a particular Mac to be awake. Tag push = signed, notarized DMG on a GitHub
+# release. Manual run = dry run: archive + unsigned DMG, no secrets touched.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Build and package only — no notarization, no release"
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -16,27 +14,37 @@ permissions:
 concurrency: release-${{ github.ref }}
 
 jobs:
-  release:
-    # Hard gate: never run for forks, only for the canonical repo.
-    if: github.repository == 'SP4C3W0LF/inkfall'
-    runs-on: [self-hosted, macOS, inkfall]
-    timeout-minutes: 90
+  dry-run:
+    if: github.repository == 'SP4C3W0LF/inkfall' && github.event_name == 'workflow_dispatch'
+    runs-on: macos-26
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+      - run: brew install xcodegen
+      - run: ci/release.sh 0.0.0-ci --dry-run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Inkfall-dryrun
+          path: dist/Inkfall-dryrun.dmg
+          retention-days: 7
 
-      - name: Build and package
+  release:
+    if: github.repository == 'SP4C3W0LF/inkfall' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    timeout-minutes: 90
+    # The signing secrets live only in this environment, which is restricted to v* tags.
+    environment: release
+    steps:
+      - uses: actions/checkout@v5
+      - run: brew install xcodegen create-dmg
+      - name: Build, sign, notarize, package
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DRY_RUN" = "true" ]; then
-            "$HOME/inkfall-release/ci-release.sh" "0.0.0-ci" --dry-run
-          else
-            "$HOME/inkfall-release/ci-release.sh" "${GITHUB_REF_NAME#v}"
-          fi
-
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: ci/release.sh "${GITHUB_REF_NAME#v}"
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
