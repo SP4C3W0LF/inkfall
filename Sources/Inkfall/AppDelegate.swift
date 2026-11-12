@@ -198,14 +198,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = templateGlyph("waveform")
+        item.button?.image = templateGlyph(DictationState.idleMenuGlyph)
         item.button?.toolTip = "Inkfall"
         statusItem = item
         rebuildMenu()
     }
 
     private func templateGlyph(_ name: String) -> NSImage? {
-        let image = NSImage.flowSymbol(name, pointSize: 16, weight: .regular)
+        let image: NSImage?
+        if name == DictationState.idleMenuGlyph {
+            // Custom glyph from the asset catalog; `swift run` builds do not bundle it, so fall back.
+            image = NSImage(named: name)
+                ?? NSImage.flowSymbol("waveform", pointSize: 16, weight: .regular)
+        } else {
+            image = NSImage.flowSymbol(name, pointSize: 16, weight: .regular)
+        }
         image?.isTemplate = true
         return image
     }

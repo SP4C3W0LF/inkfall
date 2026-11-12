@@ -181,7 +181,12 @@ extension DictationState {
 
     // MARK: Menu presentation
 
-    /// Monochrome template SF Symbol for the menu bar. State by symbol swap.
+    /// Name of the custom idle glyph (Resources/Assets.xcassets/MenuBarGlyph). The menu bar resolves
+    /// it to the asset, or to the `waveform` SF Symbol when the catalog is not bundled (`swift run`).
+    static let idleMenuGlyph = "MenuBarGlyph"
+
+    /// Monochrome template image name for the menu bar. State by swap: the idle state is the Inkfall
+    /// glyph, the transient and attention states stay SF Symbols.
     var menuGlyph: String {
         switch self {
         case .listening, .silence:
@@ -191,7 +196,7 @@ extension DictationState {
         case .needsMicrophone, .needsAccessibility, .readyNoAccessibility, .needsModel, .downloadFailed:
             return "waveform.badge.exclamationmark"
         default:
-            return "waveform"
+            return DictationState.idleMenuGlyph
         }
     }
 

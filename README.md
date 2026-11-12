@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/export/readme-lockup-dark.svg">
+    <img src="design/export/readme-lockup-light.svg" alt="Inkfall" width="360">
+  </picture>
+</p>
+
 # Inkfall
 
 Offline dictation for macOS. Press a hotkey, speak, and your words land in whatever app you're using — transcribed, cleaned up, and pasted entirely on your Mac.
@@ -9,7 +16,7 @@ Your voice and your text never leave your machine. Dictation makes zero network 
 - **Zero-setup speech recognition** — on-device Whisper via [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML). Works out of the box; pick larger models in Settings if you want more accuracy.
 - **On-device rewrite** — optional cleanup of fillers and phrasing through Apple Intelligence (Foundation Models), with a deterministic rule-based fallback when it's unavailable.
 - **Two ways to start** — tap a global shortcut (default `⌥ Space`, fully rebindable, warns about system-shortcut conflicts), or switch to **hold to talk** and just hold the **left Option key** while you speak. The right Option key stays free for typing accented characters.
-- **Quiet by design** — a monochrome menu-bar waveform and a floating HUD that shows recording, transcribing, and polishing as they actually happen.
+- **Quiet by design** — a monochrome menu-bar glyph and a floating HUD that shows recording, transcribing, and polishing as they actually happen.
 - **Words are never lost** — every transcript is copied to the clipboard before insertion is attempted, so a failed paste degrades to a simple `⌘V`.
 - **Custom vocabulary and language** — your names and jargon condition the recogniser itself, so Whisper hears the word rather than being corrected afterwards, and the same list guides the cleanup pass.
 - **Bring your own engine (advanced)** — plug in a local `whisper-cli` / `llama-cli` and GGUF models instead of the built-in engines.
