@@ -96,6 +96,6 @@ Don't take the privacy claim on faith — verify it. Run Inkfall with an outboun
 
 ## License
 
-[MIT](LICENSE) © Andre Hogan
+[MIT](LICENSE) © Wasteland Labs LLC
 
 Third-party licences: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) (also inside the app, in `Contents/Resources`).
