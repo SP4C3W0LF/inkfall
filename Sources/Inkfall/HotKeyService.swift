@@ -26,16 +26,32 @@ final class HotKeyService {
         self.releaseHandler = releaseHandler
     }
 
-    func register() {
+    /// True while the shortcut is actually held by the system. False when another
+    /// app owns it, when registration failed, and while suspended.
+    var isRegistered: Bool { hotKeyRef != nil }
+
+    /// Plain words for a failed registration, or nil when it succeeded.
+    static func failureDescription(for status: OSStatus) -> String? {
+        switch status {
+        case noErr: return nil
+        case OSStatus(eventHotKeyExistsErr): return "Another app already uses this shortcut."
+        case OSStatus(eventHotKeyInvalidErr): return "This shortcut isn't valid."
+        default: return "The shortcut couldn't be registered (error \(status))."
+        }
+    }
+
+    @discardableResult
+    func register() -> OSStatus {
         installEventHandlerIfNeeded()
-        registerHotKey()
+        return registerHotKey()
     }
 
     /// Rebind to a new key combination without tearing down the event handler.
-    func update(keyCode: UInt32, modifiers: UInt32) {
+    @discardableResult
+    func update(keyCode: UInt32, modifiers: UInt32) -> OSStatus {
         self.keyCode = keyCode
         self.modifiers = modifiers
-        registerHotKey()
+        return registerHotKey()
     }
 
     /// Temporarily stop responding (e.g. while the user records a new shortcut).
@@ -43,7 +59,8 @@ final class HotKeyService {
         unregisterHotKey()
     }
 
-    func resume() {
+    @discardableResult
+    func resume() -> OSStatus {
         registerHotKey()
     }
 
@@ -79,10 +96,13 @@ final class HotKeyService {
         )
     }
 
-    private func registerHotKey() {
+    @discardableResult
+    private func registerHotKey() -> OSStatus {
         unregisterHotKey()
         let hotKeyID = EventHotKeyID(signature: OSType(0x4C464C57), id: 1)
-        RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+        let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+        if status != noErr { hotKeyRef = nil }   // never keep a ref from a failed call
+        return status
     }
 
     private func unregisterHotKey() {

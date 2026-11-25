@@ -32,6 +32,14 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     private let onSave: (InkfallConfig) -> Void
     private let onHotkeyRecording: (Bool) -> Void
     private var pendingHotKey = KeyCombo.defaultCombo
+    /// What the form held right after it was last loaded or saved. "Unsaved changes"
+    /// means the form no longer equals this.
+    private var baselineForm = SettingsForm()
+    private var downloadSerial = 0
+    private var activeDownloadID: [DownloadTarget: Int] = [:]
+    private static let languageHintText = "The language you'll speak."
+    private static let languageChoices = ["en", "auto", "es", "fr", "de", "it", "pt", "ja", "ko", "zh"]
+    private static let modelChoices = ["tiny.en", "base.en", "small.en", "large-v3-turbo"]
     private var hotkeyField: KeyRecorderField?
 
     // Speech
@@ -44,6 +52,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     private let whisperProgress = SettingsControls.progressBar()
     private let whisperProgressLabel = SettingsControls.captionLabel("")
     private var whisperDownload: ModelDownloadJob?
+    private let whisperCancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+    private let languageHint = SettingsControls.captionLabel(SettingsWindowController.languageHintText)
+    private var rememberedLanguage: String?
     private let enginePopup = NSPopUpButton()
     private let whisperKitModelPopup = NSPopUpButton()
 
@@ -57,6 +68,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     private let llamaProgress = SettingsControls.progressBar()
     private let llamaProgressLabel = SettingsControls.captionLabel("")
     private var llamaDownload: ModelDownloadJob?
+    private let llamaCancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let rewriteEnginePopup = NSPopUpButton()
     private let appleRewriteStatus = StatusChip()
     private let appleRewriteHint = SettingsControls.captionLabel("")
@@ -103,6 +115,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
             defer: false
         )
         window.title = "General"
+        window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 520, height: 380)
         window.center()
 
@@ -123,13 +136,17 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     func show() { show(tab: config.hasWhisperConfiguration ? .general : .speech) }
 
     func show(tab: SettingsTab) {
-        loadConfigIntoFields()
+        // Reopening from the menu while the window is up must not throw away edits.
+        if window?.isVisible != true { loadConfigIntoFields() }
         select(tab)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         refreshPermissionStatuses()
         startPermissionsTimer()
+        if let problem = InkfallConfig.loadProblem {
+            setFooter(problem, tone: .warning)
+        }
     }
 
     func update(config: InkfallConfig) {
@@ -226,6 +243,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         let recorder = KeyRecorderField(combo: pendingHotKey)
         recorder.onChange = { [weak self] combo in
             guard let self else { return }
+            if let reason = KeyCombo.riskReason(keyCode: combo.keyCode, carbonModifiers: combo.carbonModifiers) {
+                // Refuse it: keep the shortcut that was already chosen.
+                self.hotkeyField?.setCombo(self.pendingHotKey)
+                self.setFooter(reason, tone: .warning)
+                return
+            }
             self.pendingHotKey = combo
             self.updateHotkeyWarning()
         }
@@ -250,7 +273,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         return section("General", rows: [
             row("Shortcut", recorder, hint: "Click, then press a modifier + key. Save to apply."),
             row("Dictation", dictationModePopup,
-                hint: "Tap uses the shortcut above, once to start and again to stop. Hold records while you hold the left Option key on its own."),
+                hint: "Tap uses the shortcut above, once to start and again to stop. Hold records while you hold the left Option key on its own. Without Accessibility, hold mode uses the shortcut instead."),
             row("Start up", launchAtLoginCheckbox, hint: "Open Inkfall automatically when you log in."),
             row("Indicator", hudPositionPopup, hint: "Where the status bubble appears while you dictate."),
             SettingsControls.divider(),
@@ -283,22 +306,25 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         enginePopup.action = #selector(engineChanged)
         enginePopup.selectItem(at: config.speechEngine == .cli ? 1 : 0)
 
-        whisperKitModelPopup.removeAllItems()
-        whisperKitModelPopup.addItems(withTitles: ["tiny.en", "base.en", "small.en", "large-v3-turbo"])
-        whisperKitModelPopup.selectItem(withTitle: config.whisperKitModelName)
+        fill(whisperKitModelPopup, base: Self.modelChoices, current: config.whisperKitModelDisplayName)
+        whisperKitModelPopup.target = self
+        whisperKitModelPopup.action = #selector(modelChanged)
 
         // Transcription language + vocabulary live here: both shape what words come
         // out of the recognizer, not the rewrite step.
-        languagePopup.removeAllItems()
-        languagePopup.addItems(withTitles: ["en", "auto", "es", "fr", "de", "it", "pt", "ja", "ko", "zh"])
-        languagePopup.selectItem(withTitle: config.whisperLanguage)
+        fill(languagePopup, base: Self.languageChoices, current: config.whisperLanguage)
         languagePopup.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        whisperCancelButton.target = self
+        whisperCancelButton.action = #selector(cancelWhisperDownload)
+        whisperCancelButton.bezelStyle = .rounded
+        whisperCancelButton.isHidden = true
+        whisperProgress.setAccessibilityLabel("Speech model download progress")
 
         let recommendRow = row("", stack([
             makeButton("Download recommended model", #selector(downloadRecommended)),
             SettingsControls.captionLabel(InkfallDefaults.recommendedWhisper.size)
         ]))
-        let progressRow = row("", stack([whisperProgress, whisperProgressLabel]))
+        let progressRow = row("", stack([whisperProgress, whisperProgressLabel, whisperCancelButton]))
         let cliRow = pathRow("Engine (CLI)", field: whisperBinaryField, status: whisperBinaryStatus, choose: #selector(chooseWhisperBinary))
         let modelRow = pathRow("Model", field: whisperModelField, status: whisperModelStatus, choose: #selector(chooseWhisperModel))
         let folderRow = row("Download to", stack([whisperFolderField, makeButton("Folder", #selector(chooseWhisperFolder))]))
@@ -308,7 +334,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
             SettingsControls.bodyLabel("Inkfall transcribes entirely on this Mac. WhisperKit (Apple Neural Engine) is the default — nothing to install; the model downloads automatically the first time."),
             row("Engine", enginePopup),
             row("Model", whisperKitModelPopup, hint: "Larger models are more accurate but slower."),
-            row("Language", languagePopup, hint: "The language you'll speak."),
+            row("Language", languagePopup, hintLabel: languageHint),
             row("Vocabulary", vocabularyField, hint: "Names, acronyms, and product terms. Comma separated.")
         ])
         let advanced = disclosureSection(
@@ -325,7 +351,45 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
                 self?.whisperAdvancedCard = card
             }
         )
+        updateLanguageAvailability()
         return paneStack([main, advanced])
+    }
+
+    /// Replace a popup's items with the standard list plus the current value (if the
+    /// list lacks it, so Save keeps what the file had), and select the current value.
+    private func fill(_ popup: NSPopUpButton, base: [String], current: String) {
+        popup.removeAllItems()
+        popup.addItems(withTitles: PopupChoices.items(base: base, current: current))
+        popup.selectItem(withTitle: current)
+    }
+
+    /// An English-only model (`*.en`) can only run in English: show English, disable the
+    /// language popup, and remember the earlier choice for when a multilingual model returns.
+    private func updateLanguageAvailability() {
+        guard languagePopup.numberOfItems > 0 else { return }
+        let model = whisperKitModelPopup.numberOfItems > 0
+            ? (whisperKitModelPopup.titleOfSelectedItem ?? config.whisperKitModelDisplayName)
+            : config.whisperKitModelDisplayName
+        let englishOnly = selectedEngine() == .whisperKit && WhisperModelNames.isEnglishOnly(model)
+        if englishOnly {
+            if languagePopup.isEnabled, let current = languagePopup.titleOfSelectedItem, current != "en" {
+                rememberedLanguage = current
+            }
+            languagePopup.selectItem(withTitle: "en")
+            languagePopup.isEnabled = false
+            languageHint.stringValue = "This model only understands English."
+        } else {
+            if !languagePopup.isEnabled, let remembered = rememberedLanguage {
+                languagePopup.selectItem(withTitle: remembered)
+            }
+            rememberedLanguage = nil
+            languagePopup.isEnabled = true
+            languageHint.stringValue = Self.languageHintText
+        }
+    }
+
+    @objc private func modelChanged() {
+        updateLanguageAvailability()
     }
 
     private func selectedEngine() -> SpeechEngine {
@@ -335,6 +399,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
 
     @objc private func engineChanged() {
         expandWhisperAdvancedIfCLI()
+        updateLanguageAvailability()
         updateValidation()
     }
 
@@ -350,7 +415,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         let modelRow = pathRow("Model", field: llamaModelField, status: llamaModelStatus, choose: #selector(chooseLlamaModel))
         let folderRow = row("Download to", stack([llamaFolderField, makeButton("Folder", #selector(chooseLlamaFolder))]))
         let urlRow = row("From URL", stack([llamaURLField, makeButton("Download", #selector(downloadLlama))]))
-        let progressRow = row("", stack([llamaProgress, llamaProgressLabel]))
+        llamaCancelButton.target = self
+        llamaCancelButton.action = #selector(cancelLlamaDownload)
+        llamaCancelButton.bezelStyle = .rounded
+        llamaCancelButton.isHidden = true
+        llamaProgress.setAccessibilityLabel("Rewrite model download progress")
+        let progressRow = row("", stack([llamaProgress, llamaProgressLabel, llamaCancelButton]))
 
         let main = section("Rewrite", rows: [
             SettingsControls.bodyLabel("Turn spoken words into clean writing — grammar fixed, punctuation added, filler removed. Apple's on-device model does this with nothing to install; your text never leaves this Mac."),
@@ -376,6 +446,8 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     }
 
     private func selectedRewriteEngine() -> RewriteEngine {
+        // The Rewrite pane is built on first visit; until then keep what the config says.
+        guard rewriteEnginePopup.numberOfItems > 0 else { return config.rewriteEngine }
         switch rewriteEnginePopup.indexOfSelectedItem {
         case 1: return .llama
         case 2: return .off
@@ -399,6 +471,8 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     }
 
     private func permissionsPane() -> NSView {
+        micStatus.contextName = "Microphone"
+        accessibilityStatus.contextName = "Accessibility"
         let micRow = row("Microphone", stack([micStatus, makeButton("Grant", #selector(grantMicrophone))]), hint: "Audio never leaves this Mac.")
         let axRow = row("Accessibility", stack([accessibilityStatus, makeButton("Open Settings", #selector(openAccessibility))]), hint: "Lets Inkfall place text into your app.")
         return section("Permissions", rows: [
@@ -413,7 +487,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     private func section(_ title: String, rows: [NSView]) -> NSView {
         let header = NSTextField(labelWithString: title.uppercased())
         header.font = .systemFont(ofSize: 11, weight: .semibold)
-        header.textColor = .tertiaryLabelColor
+        header.textColor = .secondaryLabelColor
 
         let card = CardView(cornerRadius: 12)
         let rowStack = NSStackView(views: rows)
@@ -437,7 +511,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         return outer
     }
 
-    private func row(_ label: String, _ control: NSView, hint: String? = nil) -> NSView {
+    private func row(_ label: String, _ control: NSView, hint: String? = nil, hintLabel: NSTextField? = nil) -> NSView {
         let labelField = NSTextField(labelWithString: label)
         labelField.font = .systemFont(ofSize: 13)
         labelField.textColor = .secondaryLabelColor
@@ -446,13 +520,14 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         labelField.widthAnchor.constraint(equalToConstant: 108).isActive = true
 
         control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // The row label is a separate text field, so tie it to the control for VoiceOver.
+        if !label.isEmpty, !(control is NSStackView) { control.setAccessibilityLabel(label) }
         let controlRow = NSStackView(views: [labelField, control])
         controlRow.orientation = .horizontal
         controlRow.alignment = .centerY
         controlRow.spacing = 12
 
-        guard let hint else { return controlRow }
-        let hintLabel = SettingsControls.captionLabel(hint)
+        guard let hintLabel = hintLabel ?? hint.map({ SettingsControls.captionLabel($0) }) else { return controlRow }
         let spacer = NSView()
         spacer.widthAnchor.constraint(equalToConstant: 120).isActive = true
         let hintRow = NSStackView(views: [spacer, hintLabel])
@@ -467,7 +542,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     }
 
     private func pathRow(_ label: String, field: NSTextField, status: StatusChip, choose: Selector) -> NSView {
-        row(label, stack([field, status, makeButton("Choose", choose)]))
+        field.setAccessibilityLabel(label)
+        status.contextName = label
+        return row(label, stack([field, status, makeButton("Choose", choose)]))
     }
 
     private func stack(_ views: [NSView]) -> NSStackView {
@@ -515,6 +592,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         toggle.bezelStyle = .disclosure
         toggle.setButtonType(.pushOnPushOff)
         toggle.title = ""
+        toggle.setAccessibilityLabel(title)
         toggle.state = initiallyExpanded ? .on : .off
         toggle.tag = tag
         toggle.target = self
@@ -522,7 +600,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
 
         let label = NSTextField(labelWithString: title.uppercased())
         label.font = .systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = .tertiaryLabelColor
+        label.textColor = .secondaryLabelColor
 
         let header = NSStackView(views: [toggle, label])
         header.orientation = .horizontal
@@ -577,7 +655,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
             // Mirror intent into the persisted config; the OS remains authoritative.
             var updated = config
             updated.launchAtLogin = want
-            try? updated.save()
+            try? updated.saveKeepingEnvironmentValues(loaded: config)
             config = updated
             setFooter(want ? "Inkfall will launch at login." : "Inkfall won't launch at login.", tone: .ok)
         }
@@ -631,6 +709,26 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         onHotkeyRecording(false)
     }
 
+    /// Closing with unsaved edits asks first. A synchronous modal on the window delegate
+    /// the class already has (like `windowWillClose`), not an async completion handler.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard isDirty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Save your changes?"
+        alert.informativeText = "You changed settings that aren't saved yet."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        let choice: UnsavedChoice
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: choice = .save
+        case .alertSecondButtonReturn: choice = .discard
+        default: choice = .cancel
+        }
+        let saved = choice == .save ? performSave() : false
+        return UnsavedChanges.mayClose(choice: choice, saveSucceeded: saved)
+    }
+
     func windowDidBecomeKey(_ notification: Notification) {
         // The user may have flipped the login item or a permission in System Settings
         // while the window was open; re-read the ground truth on return.
@@ -649,7 +747,11 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         llamaModelField.stringValue = config.llamaModelPath ?? ""
         llamaFolderField.stringValue = config.llamaModelDirectory ?? ""
         llamaURLField.stringValue = config.llamaModelURL ?? ""
-        languagePopup.selectItem(withTitle: config.whisperLanguage)
+        if languagePopup.numberOfItems > 0 {
+            languagePopup.isEnabled = true
+            rememberedLanguage = nil
+            fill(languagePopup, base: Self.languageChoices, current: config.whisperLanguage)
+        }
         vocabularyField.stringValue = config.customVocabulary.joined(separator: ", ")
         // Zero-config: auto-detect an installed engine and default the model folder.
         if whisperBinaryField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -664,8 +766,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
             expandWhisperAdvancedIfCLI()
         }
         if whisperKitModelPopup.numberOfItems > 0 {
-            whisperKitModelPopup.selectItem(withTitle: config.whisperKitModelName)
+            fill(whisperKitModelPopup, base: Self.modelChoices, current: config.whisperKitModelDisplayName)
         }
+        updateLanguageAvailability()
         if rewriteEnginePopup.numberOfItems > 0 {
             rewriteEnginePopup.selectItem(at: rewriteEngineIndex(config.rewriteEngine))
             refreshAppleRewriteStatus()
@@ -681,6 +784,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         hotkeyField?.setCombo(pendingHotKey)
         hotkeyField?.hasWarning = false
         updateValidation()
+        baselineForm = currentForm()
     }
 
     private func updateHotkeyWarning() {
@@ -696,39 +800,51 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         }
     }
 
-    @objc private func save() {
-        var updated = config
-        updated.whisperBinaryPath = clean(whisperBinaryField.stringValue)
-        updated.whisperModelPath = clean(whisperModelField.stringValue)
-        updated.whisperModelDirectory = clean(whisperFolderField.stringValue)
-        updated.whisperModelURL = clean(whisperURLField.stringValue)
-        updated.llamaBinaryPath = clean(llamaBinaryField.stringValue)
-        updated.llamaModelPath = clean(llamaModelField.stringValue)
-        updated.llamaModelDirectory = clean(llamaFolderField.stringValue)
-        updated.llamaModelURL = clean(llamaURLField.stringValue)
-        updated.whisperLanguage = languagePopup.titleOfSelectedItem ?? "en"
-        updated.customVocabulary = vocabularyField.stringValue
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        updated.hotKeyCode = Int(pendingHotKey.keyCode)
-        updated.hotKeyModifiers = Int(pendingHotKey.carbonModifiers)
-        updated.hotKeyDisplay = pendingHotKey.display
-        updated.speechEngineRaw = selectedEngine().rawValue
-        updated.rewriteEngineRaw = selectedRewriteEngine().rawValue
-        updated.hudPositionRaw = selectedHUDPosition().rawValue
-        updated.dictationModeRaw = selectedDictationMode().rawValue
-        if whisperKitModelPopup.numberOfItems > 0, let model = whisperKitModelPopup.titleOfSelectedItem {
-            updated.whisperKitModel = model
-        }
+    /// Everything the form holds right now. A pane that has not been built yet has no
+    /// popup to read, so its values stay what the config says.
+    private func currentForm() -> SettingsForm {
+        var form = SettingsForm()
+        form.whisperBinaryPath = whisperBinaryField.stringValue
+        form.whisperModelPath = whisperModelField.stringValue
+        form.whisperModelDirectory = whisperFolderField.stringValue
+        form.whisperModelURL = whisperURLField.stringValue
+        form.llamaBinaryPath = llamaBinaryField.stringValue
+        form.llamaModelPath = llamaModelField.stringValue
+        form.llamaModelDirectory = llamaFolderField.stringValue
+        form.llamaModelURL = llamaURLField.stringValue
+        form.language = languagePopup.numberOfItems > 0
+            ? (languagePopup.titleOfSelectedItem ?? config.whisperLanguage)
+            : config.whisperLanguage
+        form.vocabulary = vocabularyField.stringValue
+        form.hotKey = pendingHotKey
+        form.speechEngine = selectedEngine()
+        form.rewriteEngine = selectedRewriteEngine()
+        form.hudPosition = selectedHUDPosition()
+        form.mode = selectedDictationMode()
+        form.whisperKitModel = whisperKitModelPopup.numberOfItems > 0 ? whisperKitModelPopup.titleOfSelectedItem : nil
+        return form
+    }
 
+    private var isDirty: Bool { currentForm() != baselineForm }
+
+    @objc private func save() {
+        performSave()
+    }
+
+    @discardableResult
+    private func performSave() -> Bool {
+        let updated = currentForm().applied(to: config)
         do {
-            try updated.save()
+            // Values that came from INKFALL_* variables stay out of config.json.
+            try updated.saveKeepingEnvironmentValues(loaded: config)
             config = updated
             onSave(updated)
+            baselineForm = currentForm()
             updateValidation(saved: true)
+            return true
         } catch {
             setFooter("Save failed: \(error.localizedDescription)", tone: .error)
+            return false
         }
     }
 
@@ -765,7 +881,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
 
     // MARK: Downloads
 
-    private enum DownloadTarget { case whisper, llama }
+    private enum DownloadTarget: Hashable { case whisper, llama }
 
     @objc private func downloadWhisper() { startDownload(target: .whisper) }
     @objc private func downloadLlama() { startDownload(target: .llama) }
@@ -781,26 +897,34 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         let folderField = target == .whisper ? whisperFolderField : llamaFolderField
         let progress = target == .whisper ? whisperProgress : llamaProgress
         let label = target == .whisper ? whisperProgressLabel : llamaProgressLabel
+        let cancelButton = target == .whisper ? whisperCancelButton : llamaCancelButton
 
         guard let cleanURL = clean(urlField.stringValue), let cleanFolder = clean(folderField.stringValue) else {
             setFooter("Choose a download folder and paste a direct model URL.", tone: .warning)
             return
         }
 
+        // A second download replaces the first instead of dropping its handle.
+        cancelActiveDownload(target)
+
+        downloadSerial += 1
+        let id = downloadSerial
+        activeDownloadID[target] = id
+
         progress.isHidden = false
         progress.doubleValue = 0
         label.stringValue = "Starting…"
+        cancelButton.isHidden = false
 
         let job = ModelDownloadJob(
             directory: cleanFolder,
-            onProgress: { fraction, received, total in
+            onProgress: { [weak self] fraction, received, total in
                 Task { @MainActor in
-                    progress.doubleValue = fraction
-                    label.stringValue = Self.progressText(received: received, total: total)
+                    self?.downloadProgressed(target: target, id: id, fraction: fraction, received: received, total: total)
                 }
             },
             onFinished: { [weak self] result in
-                Task { @MainActor in self?.finishDownload(target: target, result: result) }
+                Task { @MainActor in self?.finishDownload(target: target, id: id, result: result) }
             }
         )
         switch target {
@@ -815,10 +939,47 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         job.start(urlString: cleanURL, expectedSHA256: expectedSHA)
     }
 
-    private func finishDownload(target: DownloadTarget, result: Result<ModelDownloadResult, Error>) {
+    /// Stops a running download and forgets it, so its late callbacks are ignored.
+    private func cancelActiveDownload(_ target: DownloadTarget) {
+        switch target {
+        case .whisper:
+            whisperDownload?.cancel()
+            whisperDownload = nil
+        case .llama:
+            llamaDownload?.cancel()
+            llamaDownload = nil
+        }
+        activeDownloadID[target] = nil
+    }
+
+    @objc private func cancelWhisperDownload() { userCancelledDownload(.whisper) }
+    @objc private func cancelLlamaDownload() { userCancelledDownload(.llama) }
+
+    private func userCancelledDownload(_ target: DownloadTarget) {
+        cancelActiveDownload(target)
+        let progress = target == .whisper ? whisperProgress : llamaProgress
+        let label = target == .whisper ? whisperProgressLabel : llamaProgressLabel
+        let cancelButton = target == .whisper ? whisperCancelButton : llamaCancelButton
+        progress.doubleValue = 0
+        label.stringValue = "Canceled."
+        cancelButton.isHidden = true
+    }
+
+    private func downloadProgressed(target: DownloadTarget, id: Int, fraction: Double, received: Int64, total: Int64) {
+        guard activeDownloadID[target] == id else { return }
+        let progress = target == .whisper ? whisperProgress : llamaProgress
+        let label = target == .whisper ? whisperProgressLabel : llamaProgressLabel
+        progress.doubleValue = fraction
+        label.stringValue = Self.progressText(received: received, total: total)
+    }
+
+    private func finishDownload(target: DownloadTarget, id: Int, result: Result<ModelDownloadResult, Error>) {
+        // A canceled or replaced download reports back late; ignore it.
+        guard activeDownloadID[target] == id else { return }
         let progress = target == .whisper ? whisperProgress : llamaProgress
         let label = target == .whisper ? whisperProgressLabel : llamaProgressLabel
         let modelField = target == .whisper ? whisperModelField : llamaModelField
+        let cancelButton = target == .whisper ? whisperCancelButton : llamaCancelButton
 
         switch result {
         case .success(let downloaded):
@@ -830,6 +991,8 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
             label.stringValue = "Failed: \(error.localizedDescription)"
         }
 
+        cancelButton.isHidden = true
+        activeDownloadID[target] = nil
         switch target {
         case .whisper: whisperDownload = nil
         case .llama: llamaDownload = nil
@@ -963,7 +1126,7 @@ enum SettingsControls {
     static func captionLabel(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 11)
-        label.textColor = .tertiaryLabelColor
+        label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byWordWrapping
         label.maximumNumberOfLines = 2
         return label
@@ -1007,7 +1170,17 @@ final class FlippedView: NSView {
 final class StatusChip: NSView {
     enum Tone {
         case ok, warning, error, neutral
+        /// Text colour: readable on the tinted chip in light and dark (see ContrastTests).
         var color: NSColor {
+            switch self {
+            case .ok: return InkfallDesign.statusGreenText
+            case .warning: return InkfallDesign.statusAmberText
+            case .error: return InkfallDesign.statusRedText
+            case .neutral: return .secondaryLabelColor
+            }
+        }
+        /// The tint behind the text.
+        var tint: NSColor {
             switch self {
             case .ok: return InkfallDesign.green
             case .warning: return InkfallDesign.amber
@@ -1018,6 +1191,10 @@ final class StatusChip: NSView {
     }
 
     private let label = NSTextField(labelWithString: "")
+    /// What this chip is about ("Microphone"), read before its text by VoiceOver.
+    var contextName: String? {
+        didSet { updateAccessibility() }
+    }
 
     init() {
         super.init(frame: .zero)
@@ -1035,6 +1212,8 @@ final class StatusChip: NSView {
             label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
             label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3)
         ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
         set("—", tone: .neutral)
     }
 
@@ -1045,6 +1224,12 @@ final class StatusChip: NSView {
     func set(_ text: String, tone: Tone) {
         label.stringValue = text
         label.textColor = tone.color
-        layer?.backgroundColor = tone.color.withAlphaComponent(0.14).cgColor
+        layer?.backgroundColor = tone.tint.withAlphaComponent(InkfallPalette.chipTintAlpha).cgColor
+        updateAccessibility()
+    }
+
+    private func updateAccessibility() {
+        let text = label.stringValue
+        setAccessibilityLabel(contextName.map { "\($0): \(text)" } ?? text)
     }
 }

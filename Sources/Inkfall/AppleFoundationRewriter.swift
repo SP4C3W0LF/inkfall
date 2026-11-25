@@ -64,7 +64,11 @@ struct AppleFoundationRewriter: TranscriptRewriter {
         // ("what time is it") gets cleaned up rather than answered.
         let response = try await session.respond(to: "Dictated text to clean up:\n\n\(transcript)")
         let clean = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = clean.isEmpty ? transcript : clean
-        return CleanedTranscript(cleanText: text, confidence: .high, needsReview: false)
+        // A model that answered, summarised or expanded is not editing: let the
+        // composite fall back to the rule-based text.
+        guard RewriteGuard.accepts(input: transcript, output: clean) else {
+            throw InkfallError.rewriteRejected
+        }
+        return CleanedTranscript(cleanText: clean)
     }
 }

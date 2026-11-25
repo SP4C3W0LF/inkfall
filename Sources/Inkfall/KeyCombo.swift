@@ -21,6 +21,39 @@ struct KeyCombo: Equatable, Sendable {
         display: "⌥Space"
     )
 
+    /// Builds a combo from values read out of the settings file. Nil when a value is
+    /// out of range (a negative or huge number typed by hand), so the caller can use
+    /// the default instead of trapping on a conversion.
+    static func validated(code: Int, modifiers: Int, display: String) -> KeyCombo? {
+        let allowedModifiers = cmdKey | optionKey | controlKey | shiftKey
+        guard (0...255).contains(code),
+              modifiers > 0, modifiers & ~allowedModifiers == 0,
+              !display.isEmpty else { return nil }
+        return KeyCombo(keyCode: UInt32(code), carbonModifiers: UInt32(modifiers), display: display)
+    }
+
+    /// Why a recorded combo is a bad global shortcut, or nil if it is fine. Option plus
+    /// a character key alone would stop that key typing its character in every app
+    /// (⌥Space and function keys are allowed).
+    static func riskReason(keyCode: UInt32, carbonModifiers: UInt32) -> String? {
+        let mask = UInt32(cmdKey | optionKey | controlKey | shiftKey)
+        let mods = carbonModifiers & mask
+        guard mods == UInt32(optionKey) else { return nil }
+        if keyCode == UInt32(kVK_Space) || functionKeyCodes.contains(Int(keyCode)) { return nil }
+        if nonCharacterKeyCodes.contains(Int(keyCode)) { return nil }
+        return "Option with a character key would stop that key typing. Add ⌘ or ⌃."
+    }
+
+    private static let functionKeyCodes: Set<Int> = [
+        kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
+        kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20
+    ]
+    /// Keys that type nothing visible, so Option on them costs the user nothing.
+    private static let nonCharacterKeyCodes: Set<Int> = [
+        kVK_Return, kVK_Tab, kVK_Escape, kVK_Delete, kVK_ForwardDelete, kVK_LeftArrow, kVK_RightArrow,
+        kVK_UpArrow, kVK_DownArrow, kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown
+    ]
+
     /// Builds a combo from a recorded key event. Returns nil unless a command,
     /// option, or control modifier is held — a bare key is a poor global hotkey.
     @MainActor
@@ -131,6 +164,8 @@ final class KeyRecorderField: NSView {
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 1
 
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
         label.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         label.alignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -181,7 +216,16 @@ final class KeyRecorderField: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        guard recording else { super.keyDown(with: event); return }
+        guard recording else {
+            // Keyboard-only users start recording with Space or Return (a click did it before).
+            let code = Int(event.keyCode)
+            if code == kVK_Space || code == kVK_Return || code == kVK_ANSI_KeypadEnter {
+                recording = true
+                return
+            }
+            super.keyDown(with: event)
+            return
+        }
         // Swallow even an invalid (modifier-less) press so there's no system beep.
         _ = capture(event)
     }
@@ -200,8 +244,35 @@ final class KeyRecorderField: NSView {
         return super.resignFirstResponder()
     }
 
+    // Switching to another app (or anything else that makes the window lose key)
+    // does NOT resign the first responder, so without this the field would keep
+    // saying "Type a shortcut…" and the global hotkey would stay suspended while
+    // the user works elsewhere. Closing the window is already covered by
+    // SettingsWindowController.windowWillClose.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        guard let window else { return }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidResignKey),
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+    }
+
+    // Notification target: nonisolated + an explicit hop, like the actions in AppDelegate.
+    @objc nonisolated private func windowDidResignKey() {
+        Task { @MainActor in
+            if self.recording { self.recording = false }
+        }
+    }
+
     private func updateAppearance() {
         label.stringValue = recording ? "Type a shortcut…" : combo.display
+        setAccessibilityLabel(recording
+            ? "Shortcut, recording. Press the new shortcut, or Escape to cancel."
+            : "Shortcut, \(combo.display). Press Space to record a new one.")
         label.textColor = recording ? .secondaryLabelColor : .labelColor
         let border: NSColor = recording
             ? InkfallDesign.ember

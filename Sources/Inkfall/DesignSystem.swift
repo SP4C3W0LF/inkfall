@@ -11,8 +11,24 @@ enum InkfallDesign {
     static let ember = NSColor(name: NSColor.Name("InkfallEmber")) { appearance in
         let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         return isDark
-            ? NSColor(srgbRed: 0.949, green: 0.659, blue: 0.294, alpha: 1) // #F2A84B
-            : NSColor(srgbRed: 0.878, green: 0.569, blue: 0.184, alpha: 1) // #E0912F
+            ? InkfallPalette.emberDark.nsColor // #F2A84B
+            : InkfallPalette.emberLight.nsColor // #E0912F
+    }
+
+    /// Ember as TEXT. The fill ember is only about 2.3:1 on a light window, so light mode
+    /// gets a darker amber; dark mode keeps the bright one (about 7:1 on dark).
+    static let emberText = adaptive(light: InkfallPalette.emberTextLight, dark: InkfallPalette.emberDark, name: "InkfallEmberText")
+
+    /// Status text (chips and the Settings footer): readable on the tinted chip in both appearances.
+    static let statusGreenText = adaptive(light: InkfallPalette.greenTextLight, dark: InkfallPalette.greenTextDark, name: "InkfallStatusGreen")
+    static let statusAmberText = adaptive(light: InkfallPalette.amberTextLight, dark: InkfallPalette.amberTextDark, name: "InkfallStatusAmber")
+    static let statusRedText = adaptive(light: InkfallPalette.redTextLight, dark: InkfallPalette.redTextDark, name: "InkfallStatusRed")
+
+    private static func adaptive(light: RGB, dark: RGB, name: String) -> NSColor {
+        NSColor(name: NSColor.Name(name)) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return (isDark ? dark : light).nsColor
+        }
     }
 
     /// Fixed near-black ink used on top of ember fills (>= 4.8:1 in both appearances).
@@ -26,12 +42,70 @@ enum InkfallDesign {
     static let red = NSColor.systemRed        // failure
 }
 
+// MARK: - Literal colours and contrast
+//
+// Every literal text colour lives here as plain numbers so a test can measure it.
+
+struct RGB: Equatable, Sendable {
+    let red: Double, green: Double, blue: Double
+    init(hex: UInt32) {
+        red = Double((hex >> 16) & 0xFF) / 255
+        green = Double((hex >> 8) & 0xFF) / 255
+        blue = Double(hex & 0xFF) / 255
+    }
+    init(red: Double, green: Double, blue: Double) {
+        self.red = red; self.green = green; self.blue = blue
+    }
+    var nsColor: NSColor { NSColor(srgbRed: red, green: green, blue: blue, alpha: 1) }
+}
+
+enum Contrast {
+    /// WCAG relative luminance.
+    static func luminance(_ c: RGB) -> Double {
+        func lin(_ v: Double) -> Double { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+        return 0.2126 * lin(c.red) + 0.7152 * lin(c.green) + 0.0722 * lin(c.blue)
+    }
+
+    /// WCAG contrast ratio, 1...21, the same whichever colour is passed first.
+    static func ratio(_ a: RGB, _ b: RGB) -> Double {
+        let la = luminance(a), lb = luminance(b)
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+    }
+
+    /// `fg` at `alpha` laid over `bg` (a tinted chip background).
+    static func composite(_ fg: RGB, over bg: RGB, alpha: Double) -> RGB {
+        RGB(red: fg.red * alpha + bg.red * (1 - alpha),
+            green: fg.green * alpha + bg.green * (1 - alpha),
+            blue: fg.blue * alpha + bg.blue * (1 - alpha))
+    }
+}
+
+enum InkfallPalette {
+    static let emberLight = RGB(hex: 0xE0912F)
+    static let emberDark = RGB(hex: 0xF2A84B)
+    static let emberTextLight = RGB(hex: 0x8A5200)
+
+    static let greenTextLight = RGB(hex: 0x0A6A1F)
+    static let greenTextDark = RGB(hex: 0x32D74B)
+    static let amberTextLight = RGB(hex: 0x7A4A00)
+    static let amberTextDark = RGB(hex: 0xFF9F0A)
+    static let redTextLight = RGB(hex: 0xB0221A)
+    static let redTextDark = RGB(hex: 0xFF8F87)
+
+    // The tints behind status chips (macOS system colours, approximate sRGB).
+    static let greenTintLight = RGB(hex: 0x28CD41), greenTintDark = RGB(hex: 0x32D74B)
+    static let amberTintLight = RGB(hex: 0xFF9500), amberTintDark = RGB(hex: 0xFF9F0A)
+    static let redTintLight = RGB(hex: 0xFF3B30), redTintDark = RGB(hex: 0xFF453A)
+    static let chipTintAlpha = 0.14
+
+    // Backgrounds the text can land on (approximate: the system picks the exact values).
+    static let lightBackgrounds = [RGB(hex: 0xFFFFFF), RGB(hex: 0xECECEC)]
+    static let darkBackgrounds = [RGB(hex: 0x1E1E1E), RGB(hex: 0x2C2C2C)]
+}
+
 // MARK: - Motion tokens
 
 enum InkfallMotion {
-    static let fadeIn: TimeInterval = 0.20
-    static let fadeOut: TimeInterval = 0.25
-    static let settle: TimeInterval = 0.30
     static let dwell: TimeInterval = 1.8
 }
 

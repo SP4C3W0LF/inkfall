@@ -13,7 +13,8 @@ let package = Package(
         .executable(name: "Inkfall", targets: ["Inkfall"])
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/WhisperKit", from: "1.0.0")
+        // Pinned: a release must build exactly what was tested. Bump on purpose, with Package.resolved.
+        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "1.1.1")
     ],
     targets: [
         .executableTarget(
@@ -36,6 +37,16 @@ let package = Package(
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("Carbon")
+            ]
+        ),
+        // Unit tests run with `swift test`. They link the app's code and never
+        // launch the app, so they need no microphone or Accessibility grant.
+        .testTarget(
+            name: "InkfallTests",
+            dependencies: ["Inkfall"],
+            path: "Tests/InkfallTests",
+            swiftSettings: [
+                .unsafeFlags(["-disable-dynamic-actor-isolation"])
             ]
         )
     ]

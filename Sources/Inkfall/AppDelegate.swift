@@ -15,9 +15,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hudWindowController: DictationHUDWindowController?
     private let normalizer = TranscriptNormalizer()
     private var currentConfig = InkfallConfig.default
+    /// What the system said when the shortcut was last registered as the active trigger.
+    private var hotKeyStatus: OSStatus = noErr
+    /// Runs only while Accessibility is not granted, to notice the grant without a relaunch.
+    private var accessibilityWatchTimer: Timer?
+    /// The state before the one being rendered, for the VoiceOver announcement.
+    private var previousState: DictationState = .idle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // Recordings a crash or a kill left in the temporary folder.
+        TemporaryRecordings.sweep()
 
         let config = InkfallConfig.load()
         currentConfig = config
@@ -50,8 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // reaching for ⌥ while choosing a shortcut would open the mic.
                     self.holdMonitor?.stop()
                 } else {
-                    self.hotKeyService?.resume()
+                    self.hotKeyStatus = self.hotKeyService?.resume() ?? noErr
                     self.applyTriggerForMode(self.currentConfig)
+                    self.updateStatusGlyph()
                 }
             }
         )
@@ -89,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         )
-        hotKeyService?.register()
+        hotKeyStatus = hotKeyService?.register() ?? noErr
         applyTriggerForMode(config)
 
         NotificationCenter.default.addObserver(
@@ -98,6 +107,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSApplication.didBecomeActiveNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(accessibilityDisplayChanged),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
+        startAccessibilityWatchIfNeeded()
 
         render(controller.state)
         prewarmSpeechEngine(config)
@@ -140,11 +156,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// running both would mean reaching for the shortcut trips the bare-modifier
     /// hold first and the shortcut never resolves.
     private func applyTriggerForMode(_ config: InkfallConfig) {
+        // Whatever branch runs, the wording follows what is actually listening.
+        defer { TriggerWording.current = .resolve(mode: config.mode, holdMonitorActive: holdMonitor != nil) }
         switch config.mode {
         case .tap:
             holdMonitor?.stop()
             holdMonitor = nil
-            hotKeyService?.resume()
+            hotKeyStatus = hotKeyService?.resume() ?? noErr
 
         case .hold:
             // A global NSEvent monitor without Accessibility receives NOTHING and
@@ -155,10 +173,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard AXIsProcessTrusted() else {
                 holdMonitor?.stop()
                 holdMonitor = nil
-                hotKeyService?.resume()
+                hotKeyStatus = hotKeyService?.resume() ?? noErr
                 return
             }
             hotKeyService?.suspend()
+            hotKeyStatus = noErr   // not the trigger while the Option key is
             if holdMonitor == nil {
                 holdMonitor = ModifierHoldMonitor(
                     onBegin: { [weak self] in
@@ -166,6 +185,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     },
                     onEnd: { [weak self] in
                         Task { @MainActor in await self?.controller?.endHold() }
+                    },
+                    onDiscard: { [weak self] in
+                        Task { @MainActor in self?.controller?.discardHold() }
                     }
                 )
             }
@@ -173,7 +195,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Load the WhisperKit model in the background so the first dictation is fast.
+    /// Load the WhisperKit model in the background so the first dictation is fast. Only
+    /// from disk: a missing model is downloaded in view, by the controller.
     private func prewarmSpeechEngine(_ config: InkfallConfig) {
         guard config.speechEngine == .whisperKit else { return }
         let model = config.whisperKitModelName
@@ -181,17 +204,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyConfig(_ config: InkfallConfig) {
+        let previous = currentConfig
         currentConfig = config
         let combo = config.hotKey
         HotkeyDisplay.current = combo.display
-        hotKeyService?.update(keyCode: combo.keyCode, modifiers: combo.carbonModifiers)
+        hotKeyStatus = hotKeyService?.update(keyCode: combo.keyCode, modifiers: combo.carbonModifiers) ?? noErr
         applyTriggerForMode(config)
         settingsWindowController?.update(config: config)
         onboardingWindowController?.update(config: config)
         controller?.update(config: config, pipeline: Self.makePipeline(config: config, normalizer: normalizer))
         hudWindowController?.anchor = config.hudPosition
         updateStatusGlyph()
-        prewarmSpeechEngine(config)
+
+        // The user just asked for a model that is not on disk: download it now, in view.
+        let startsDownload = ModelDownloadPolicy.shouldStartOnSave(
+            oldEngine: previous.speechEngine, oldModel: previous.whisperKitModelName,
+            newEngine: config.speechEngine, newModel: config.whisperKitModelName,
+            isOnDisk: WhisperKitEngine.shared.isModelOnDisk(config.whisperKitModelName),
+            onboardingOpen: onboardingWindowController?.window?.isVisible == true
+        )
+        if startsDownload {
+            Task { @MainActor in await self.controller?.startModelDownload() }
+        } else {
+            prewarmSpeechEngine(config)
+        }
     }
 
     // MARK: Status item
@@ -218,13 +254,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func render(_ state: DictationState) {
-        hudWindowController?.render(state: state)
+        let before = previousState
+        previousState = state
+        hudWindowController?.render(state: state, workIsSlow: controller?.workIsSlow ?? false)
         updateStatusGlyph()
+        if let text = Announcement.text(from: before, to: state) { announce(text) }
+    }
+
+    /// Not verified: needs the running app and VoiceOver.
+    private func announce(_ text: String) {
+        NSAccessibility.post(
+            element: NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: text,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue
+            ]
+        )
     }
 
     private func updateStatusGlyph() {
         guard let controller else { return }
-        statusItem?.button?.image = templateGlyph(controller.menuState.menuGlyph)
+        let state = controller.menuState
+        statusItem?.button?.image = templateGlyph(state.menuGlyph)
+        statusItem?.button?.setAccessibilityLabel("Inkfall, \(state.statusLine)")
         rebuildMenu()
     }
 
@@ -239,62 +292,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let controller else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let state = controller.menuState
 
-        let toggle = NSMenuItem(
-            title: state.isRecording ? "Stop Dictation" : "Start Dictation",
-            action: #selector(toggleDictation),
-            keyEquivalent: ""
-        )
-        toggle.target = self
-        menu.addItem(toggle)
+        let plan = StatusMenuPlan.entries(StatusMenuInput(
+            state: controller.menuState,
+            canCancel: controller.canCancel,
+            hasLastResult: controller.lastResultText != nil,
+            hasOriginalTranscript: controller.originalTranscriptText != nil,
+            trigger: TriggerWording.current,
+            shortcut: HotkeyDisplay.current,
+            shortcutProblem: ShortcutProblem.line(status: hotKeyStatus, shortcut: HotkeyDisplay.current),
+            secureInputOn: TextInserter.isSecureInputActive,
+            microphoneAuthorized: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+            accessibilityTrusted: AXIsProcessTrusted(),
+            hasSpeechModel: currentConfig.hasWhisperConfiguration,
+            settingsProblem: InkfallConfig.loadProblem
+        ))
 
-        let status = NSMenuItem(title: state.statusLine, action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
-
-        let shortcut = NSMenuItem(title: "Shortcut: \(HotkeyDisplay.current)", action: nil, keyEquivalent: "")
-        shortcut.isEnabled = false
-        menu.addItem(shortcut)
-
-        menu.addItem(.separator())
-
-        let copyLast = NSMenuItem(title: "Copy last result", action: #selector(copyLastResult), keyEquivalent: "")
-        copyLast.target = self
-        copyLast.isEnabled = controller.lastResultText != nil
-        menu.addItem(copyLast)
-
-        let fixItems = contextualFixItems()
-        if !fixItems.isEmpty {
-            menu.addItem(.separator())
-            fixItems.forEach { menu.addItem($0) }
+        for entry in plan {
+            switch entry {
+            case .cancel:
+                menu.addItem(fixItem("Cancel", #selector(cancelWork)))
+            case let .toggle(title):
+                menu.addItem(fixItem(title, #selector(toggleDictation)))
+            case let .info(text):
+                let line = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+                line.isEnabled = false
+                menu.addItem(line)
+            case let .copyLast(enabled):
+                let item = fixItem("Copy last result", #selector(copyLastResult))
+                item.isEnabled = enabled
+                menu.addItem(item)
+            case let .copyOriginal(enabled):
+                let item = fixItem("Copy original transcript", #selector(copyOriginalTranscript))
+                item.isEnabled = enabled
+                menu.addItem(item)
+            case .chooseShortcut:
+                menu.addItem(fixItem("Choose another shortcut…", #selector(showSettingsMenuItem)))
+            case let .fix(kind):
+                let selector: Selector
+                switch kind {
+                case .grantMicrophone: selector = #selector(grantMicrophone)
+                case .openAccessibility: selector = #selector(openAccessibilityMenuItem)
+                case .setUpModel: selector = #selector(showModelSetupMenuItem)
+                }
+                menu.addItem(fixItem(StatusMenuPlan.title(for: kind), selector))
+            case .settings:
+                let item = fixItem("Settings…", #selector(showSettingsMenuItem))
+                item.keyEquivalent = ","
+                menu.addItem(item)
+            case .quit:
+                let item = fixItem("Quit Inkfall", #selector(quit))
+                item.keyEquivalent = "q"
+                menu.addItem(item)
+            case .separator:
+                menu.addItem(.separator())
+            }
         }
-
-        menu.addItem(.separator())
-
-        let settings = NSMenuItem(title: "Settings…", action: #selector(showSettingsMenuItem), keyEquivalent: ",")
-        settings.target = self
-        menu.addItem(settings)
-
-        let quit = NSMenuItem(title: "Quit Inkfall", action: #selector(quit), keyEquivalent: "q")
-        quit.target = self
-        menu.addItem(quit)
 
         statusItem?.menu = menu
-    }
-
-    private func contextualFixItems() -> [NSMenuItem] {
-        var items: [NSMenuItem] = []
-        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
-            items.append(fixItem("Grant Microphone…", #selector(grantMicrophone)))
-        }
-        if !AXIsProcessTrusted() {
-            items.append(fixItem("Open Accessibility Settings", #selector(openAccessibilityMenuItem)))
-        }
-        if !currentConfig.hasWhisperConfiguration {
-            items.append(fixItem("Set Up Speech Model…", #selector(showModelSetupMenuItem)))
-        }
-        return items
     }
 
     private func fixItem(_ title: String, _ selector: Selector) -> NSMenuItem {
@@ -324,8 +379,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller?.dismiss()
         case .retry:
             Task { @MainActor in await controller?.retry() }
-        case .cancelDownload:
-            break
+        case .cancelDownload, .cancelWork:
+            controller?.cancel()
+        case .dismiss:
+            controller?.dismiss()
         }
     }
 
@@ -342,6 +399,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc nonisolated private func copyLastResult() {
         Task { @MainActor in self.controller?.copyLastResultToClipboard() }
+    }
+
+    @objc nonisolated private func copyOriginalTranscript() {
+        Task { @MainActor in self.controller?.copyOriginalTranscriptToClipboard() }
+    }
+
+    @objc nonisolated private func cancelWork() {
+        Task { @MainActor in self.controller?.cancel() }
     }
 
     @objc nonisolated private func showSettingsMenuItem() {
@@ -365,15 +430,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc nonisolated private func appDidBecomeActive() {
-        Task { @MainActor in
-            self.controller?.refreshReadiness()
-            self.rebuildMenu()
-            // Accessibility may have just been granted in System Settings — this is
-            // the notification that fires on the way back. Re-deciding the trigger
-            // here is what upgrades hold mode from the ⌥Space fallback to left
-            // Option without a relaunch.
-            self.applyTriggerForMode(self.currentConfig)
+        Task { @MainActor in self.accessibilityMayHaveChanged() }
+    }
+
+    /// Reduce Transparency was switched on or off in System Settings.
+    @objc nonisolated private func accessibilityDisplayChanged() {
+        Task { @MainActor in self.hudWindowController?.refreshAppearance() }
+    }
+
+    /// Accessibility may have just been granted in System Settings: on the way back
+    /// to the app, or, via the watch timer, while the user is still there. Re-deciding
+    /// the trigger is what upgrades hold mode from the ⌥Space fallback to left Option
+    /// without a relaunch.
+    private func accessibilityMayHaveChanged() {
+        controller?.refreshReadiness()
+        applyTriggerForMode(currentConfig)
+        rebuildMenu()
+        startAccessibilityWatchIfNeeded()
+    }
+
+    /// A 2-second timer, running only while Accessibility is missing. Written like the
+    /// silence timer in `DictationController`.
+    private func startAccessibilityWatchIfNeeded() {
+        guard accessibilityWatchTimer == nil,
+              AccessibilityGrantWatch.shouldWatch(trusted: AXIsProcessTrusted()) else { return }
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tickAccessibilityWatch() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        accessibilityWatchTimer = timer
+    }
+
+    private func tickAccessibilityWatch() {
+        switch AccessibilityGrantWatch.step(trusted: AXIsProcessTrusted()) {
+        case .keepWatching:
+            break
+        case .granted:
+            accessibilityWatchTimer?.invalidate()
+            accessibilityWatchTimer = nil
+            accessibilityMayHaveChanged()
+        }
+    }
+
+    // MARK: Quit and reopen
+
+    func applicationWillTerminate(_ notification: Notification) {
+        controller?.shutdown()
+        holdMonitor?.stop()
+        hotKeyService?.suspend()
+        accessibilityWatchTimer?.invalidate()
+        accessibilityWatchTimer = nil
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        // Nothing is in flight any more: take every temporary recording with us.
+        TemporaryRecordings.sweep(olderThan: 0)
+    }
+
+    /// Clicking the app again (Finder, Spotlight) has no window to show, so show Settings.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Only when nothing of ours is on screen: onboarding or Settings already open stays put.
+        if !flag { showSettings() }
+        return true
     }
 
     // MARK: Windows

@@ -1,5 +1,10 @@
 import Foundation
 
+/// One reader thread writes it, and only after the group wait does anyone read it.
+private final class DataBox: @unchecked Sendable {
+    var data = Data()
+}
+
 enum CommandRunner {
     static func run(_ executable: String, arguments: [String], timeout: TimeInterval) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
@@ -21,13 +26,28 @@ enum CommandRunner {
 
         try process.run()
 
+        // Read both pipes while the process runs. Reading only after it exits stalls any
+        // tool that prints more than the pipe buffer (about 64 KB): it blocks on write,
+        // never exits, and the call waits out the whole timeout.
+        let readers = DispatchGroup()
+        let outputBox = DataBox()
+        let errorBox = DataBox()
+        for (pipe, box) in [(stdout, outputBox), (stderr, errorBox)] {
+            readers.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                box.data = pipe.fileHandleForReading.readDataToEndOfFile()
+                readers.leave()
+            }
+        }
+
         if semaphore.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
             throw InkfallError.commandFailed("Local command timed out")
         }
 
-        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        readers.wait()
+        let outputData = outputBox.data
+        let errorData = errorBox.data
         let output = String(data: outputData, encoding: .utf8) ?? ""
         let error = String(data: errorData, encoding: .utf8) ?? ""
 

@@ -64,21 +64,79 @@ final class AudioCaptureService: @unchecked Sendable {
         return _level
     }
 
+    /// Called (on the capture queue) when the audio device changed during a
+    /// recording and the recording could not be continued. The recording has been
+    /// stopped but its samples are KEPT: the owner calls `stop()` to collect them.
+    /// Set once, before the first start().
+    var onInterrupted: (@Sendable (String) -> Void)?
+
+    // Observer token for the engine's configuration-change notification. The
+    // service lives as long as the app, so it is never removed (and a nonisolated
+    // deinit could not touch it anyway).
+    private var configurationObserver: NSObjectProtocol?
+
     init(vad: VoiceActivityDetector) {
         self.vad = vad
+        // The block runs on whatever thread AVFoundation posts from, so it touches
+        // nothing but the service's own serial queue, exactly like the tap callback.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
+    }
+
+    /// The input device changed (headphones, a different default mic, a sample-rate
+    /// switch, a Bluetooth headset changing profile). The engine has stopped and the
+    /// tap's format is stale, so drop the tap. Not recording: the next start installs
+    /// one for the new device. Recording: keep what was captured and try to carry on
+    /// with a fresh tap (its rate is read again from the new format); only if that
+    /// fails, or the changes keep coming, stop and hand back what was captured.
+    private func handleConfigurationChange() {
+        queue.async {
+            let change = self.state.configurationChanged(at: ProcessInfo.processInfo.systemUptime)
+            self.engine.stop()
+            self.engine.inputNode.removeTap(onBus: 0)
+            switch change {
+            case .ignored:
+                self.setLevel(0)
+            case .resume:
+                do {
+                    try self.installTapIfNeeded()
+                    try self.engine.start()
+                } catch {
+                    if self.state.tapInstalled { self.engine.inputNode.removeTap(onBus: 0) }
+                    self.state.resumeFailed()
+                    self.setLevel(0)
+                    self.onInterrupted?("The audio device changed. Try again.")
+                }
+            case .stopKeepingSamples:
+                self.setLevel(0)
+                self.onInterrupted?("The audio device changed. Try again.")
+            }
+        }
     }
 
     func start() throws {
         try queue.sync {
-            guard !state.isRecording else { return }
             // Reset only the per-recording fields. `tapInstalled` MUST persist: the tap
             // lives on the input node across recordings, and installing a second one
             // throws "required condition is false: nullptr == Tap()".
-            state.isRecording = true
-            state.recordedSamples = []
-            try installTapIfNeeded()
-            if !engine.isRunning {
-                try engine.start()
+            guard state.begin() else { return }
+            do {
+                try installTapIfNeeded()
+                if !engine.isRunning {
+                    try engine.start()
+                }
+            } catch {
+                // Leave nothing half-done: a stuck isRecording would make every later
+                // start() a silent no-op, and a half-installed tap would make the
+                // next install throw.
+                if state.tapInstalled { engine.inputNode.removeTap(onBus: 0) }
+                state.startFailed()
+                throw error
             }
         }
         setLevel(0)
@@ -202,8 +260,58 @@ final class AudioCaptureService: @unchecked Sendable {
 
 }
 
-private struct CaptureState {
+/// The capture service's bookkeeping as plain values, so the transitions around
+/// start failures and device changes can be tested without audio hardware.
+struct CaptureState {
     var isRecording = false
     var tapInstalled = false
     var recordedSamples: [Float] = []
+
+    enum ConfigurationChange: Equatable {
+        case ignored             // not recording: only the tap is dropped
+        case resume              // recording: reinstall the tap and carry on, keeping the samples
+        case stopKeepingSamples  // too many changes at once: stop, keep the samples
+    }
+
+    /// More than this many changes inside the window during one recording is a storm.
+    static let stormLimit = 3
+    static let stormWindow: TimeInterval = 2
+
+    /// When the changes during this recording arrived (only the recent ones are kept).
+    private(set) var changeTimes: [TimeInterval] = []
+
+    /// Starts a recording. False when one is already running.
+    mutating func begin() -> Bool {
+        guard !isRecording else { return false }
+        isRecording = true
+        recordedSamples = []
+        changeTimes = []
+        return true
+    }
+
+    /// The tap or engine failed to start and the tap has been removed.
+    mutating func startFailed() {
+        isRecording = false
+        tapInstalled = false
+        recordedSamples = []
+    }
+
+    /// The input device changed: the installed tap's format is stale either way.
+    /// While recording the samples are never dropped here.
+    mutating func configurationChanged(at time: TimeInterval) -> ConfigurationChange {
+        tapInstalled = false
+        guard isRecording else { return .ignored }
+        changeTimes = changeTimes.filter { time - $0 <= Self.stormWindow } + [time]
+        if changeTimes.count > Self.stormLimit {
+            isRecording = false
+            return .stopKeepingSamples
+        }
+        return .resume
+    }
+
+    /// Resuming after a device change failed: stop recording but KEEP the samples.
+    mutating func resumeFailed() {
+        isRecording = false
+        tapInstalled = false
+    }
 }

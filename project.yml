@@ -9,7 +9,8 @@ options:
 packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
-    from: "1.0.0"
+    # Pinned to the same version as Package.swift and Package.resolved.
+    exactVersion: "1.1.1"
 
 targets:
   Inkfall:
@@ -19,6 +20,9 @@ targets:
     sources:
       - path: Sources/Inkfall
       - path: Resources/Assets.xcassets
+      # Licence texts of the packages Inkfall is built with, shipped inside the app.
+      - path: THIRD-PARTY-NOTICES.md
+        buildPhase: resources
     dependencies:
       - package: WhisperKit
         product: WhisperKit
@@ -34,6 +38,10 @@ targets:
       properties:
         CFBundleName: Inkfall
         CFBundleDisplayName: Inkfall
+        # Without these XcodeGen writes a literal 1.0 / 1 into Info.plist, and the version
+        # and build number a release passes to xcodebuild never reach the app.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         # Required by the distribution pipeline; Inkfall is a menu-bar utility.
         LSApplicationCategoryType: public.app-category.utilities
         # Menu-bar / agent app: no Dock icon (matches NSApp .accessory policy).

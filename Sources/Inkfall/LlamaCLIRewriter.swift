@@ -17,12 +17,7 @@ struct RuleBasedRewriter: TranscriptRewriter {
     let normalizer: TranscriptNormalizer
 
     func rewrite(transcript: String, context: PipelineContext) async throws -> CleanedTranscript {
-        let clean = normalizer.finalize(transcript)
-        return CleanedTranscript(
-            cleanText: clean,
-            confidence: clean.isEmpty ? .low : .medium,
-            needsReview: clean.isEmpty
-        )
+        CleanedTranscript(cleanText: normalizer.finalize(transcript))
     }
 }
 
@@ -45,7 +40,7 @@ struct LlamaCLIRewriter: TranscriptRewriter {
         Preserve the user's meaning exactly. Do not summarize. Do not invent details.
         Remove filler words and resolve self-corrections.
         Keep dictated formatting such as new paragraphs and bullet lists.
-        Return only compact JSON with keys clean_text, confidence, needs_review.
+        Return only compact JSON with the key clean_text.
 
         Custom vocabulary: \(context.vocabulary.joined(separator: ", "))
         Target app: \(context.targetAppName ?? "unknown")
@@ -70,7 +65,11 @@ struct LlamaCLIRewriter: TranscriptRewriter {
             throw InkfallError.invalidRewriteOutput
         }
 
-        return try JSONDecoder().decode(CleanedTranscript.self, from: data)
+        let decoded = try JSONDecoder().decode(CleanedTranscript.self, from: data)
+        guard RewriteGuard.accepts(input: transcript, output: decoded.cleanText) else {
+            throw InkfallError.rewriteRejected
+        }
+        return decoded
     }
 
     private func extractJSONObject(from output: String) -> String {

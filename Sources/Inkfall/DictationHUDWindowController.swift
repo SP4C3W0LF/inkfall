@@ -49,13 +49,13 @@ final class DictationHUDWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func render(state: DictationState) {
-        guard let model = state.hud else { hide(); return }
+    func render(state: DictationState, workIsSlow: Bool = false) {
+        guard let model = state.hud(workIsSlow: workIsSlow) else { hide(); return }
         hideWorkItem?.cancel()
 
         card.apply(model)
         showingRealHUD = true
-        let size = NSSize(width: model.width, height: 78)
+        let size = NSSize(width: model.width, height: model.height)
         position(for: size, anchor: anchor)
         window?.orderFrontRegardless()
         window?.ignoresMouseEvents = model.informational
@@ -74,7 +74,16 @@ final class DictationHUDWindowController: NSWindowController {
         if notify { onHidden?() }
     }
 
-    // MARK: Auto-hide + hover-to-persist
+    /// The system's Reduce Transparency setting changed while the app runs.
+    func refreshAppearance() {
+        card.refreshTransparency()
+    }
+
+    // MARK: Auto-hide
+    //
+    // A message that is not persistent hides itself after `InkfallMotion.dwell`. There
+    // is no hover-to-persist: the card ignores the mouse for informational states and
+    // does not track it for the rest. Persistent messages stay until dealt with.
 
     private func shouldAutoHide(_ model: HUDModel) -> Bool {
         !model.persistent && !model.informational
@@ -142,6 +151,28 @@ private extension HUDModel {
         if action != nil { return 524 }
         return 460
     }
+
+    /// Room for the detail text: the card minus margins, icon, gaps and what sits to
+    /// its right (an estimate of the button's width, and the close button).
+    var detailWidth: CGFloat {
+        var reserved: CGFloat = 36 + 26 + 36
+        if let actionLabel { reserved += CGFloat(actionLabel.count) * 7.5 + 36 }
+        if dismissible { reserved += 30 }
+        switch accessory {
+        case .none: break
+        case .waveform: reserved += 102
+        case .ellipsis: reserved += 44
+        case .progress: reserved += 128
+        }
+        if showsLocalPill { reserved += 70 }
+        return max(160, width - reserved)
+    }
+
+    /// One line fits at 78 points; a longer detail wraps to two and the card grows.
+    var height: CGFloat {
+        let estimatedWidth = CGFloat(detail.count) * 6.5
+        return estimatedWidth > detailWidth ? 96 : 78
+    }
 }
 
 @MainActor
@@ -173,7 +204,7 @@ private final class HUDCardView: NSVisualEffectView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
         build()
-        applyTransparencyFallback()
+        refreshTransparency()
     }
 
     required init?(coder: NSCoder) {
@@ -190,7 +221,11 @@ private final class HUDCardView: NSVisualEffectView {
 
         detailLabel.font = .systemFont(ofSize: 13)
         detailLabel.textColor = .secondaryLabelColor
-        detailLabel.lineBreakMode = .byTruncatingTail
+        // Long messages wrap to two lines; the full text is also the tooltip, so
+        // nothing a message says is ever only half readable.
+        detailLabel.lineBreakMode = .byWordWrapping
+        detailLabel.maximumNumberOfLines = 2
+        detailLabel.cell?.truncatesLastVisibleLine = true
 
         let textStack = NSStackView(views: [titleLabel, detailLabel])
         textStack.orientation = .vertical
@@ -223,6 +258,8 @@ private final class HUDCardView: NSVisualEffectView {
 
         titleLabel.stringValue = model.title
         detailLabel.stringValue = model.detail
+        detailLabel.toolTip = model.detail.isEmpty ? nil : model.detail
+        detailLabel.preferredMaxLayoutWidth = model.detailWidth
         detailLabel.isHidden = model.detail.isEmpty
         detailLabel.font = model.isPeek
             ? NSFont.systemFont(ofSize: 13).withItalic()
@@ -279,6 +316,7 @@ private final class HUDCardView: NSVisualEffectView {
             let button = NSButton(title: label, target: self, action: #selector(actionTapped))
             button.bezelStyle = .rounded
             button.controlSize = .regular
+            button.setAccessibilityLabel(label)
             if model.emberAction {
                 button.bezelColor = InkfallDesign.ember
                 button.attributedTitle = NSAttributedString(
@@ -297,11 +335,27 @@ private final class HUDCardView: NSVisualEffectView {
         if model.showsLocalPill {
             rightCluster.addArrangedSubview(LocalPillView())
         }
+
+        if model.dismissible {
+            // Same target/action wiring as the action button above.
+            let close = NSButton(title: "", target: self, action: #selector(closeTapped))
+            close.image = NSImage.flowSymbol("xmark", pointSize: 10, weight: .semibold)
+            close.imagePosition = .imageOnly
+            close.isBordered = false
+            close.contentTintColor = .secondaryLabelColor
+            close.toolTip = "Close"
+            close.setAccessibilityLabel("Close")
+            rightCluster.addArrangedSubview(close)
+        }
     }
 
     @objc private func actionTapped() {
         guard let action = currentAction else { return }
         onAction?(action)
+    }
+
+    @objc private func closeTapped() {
+        onAction?(.dismiss)
     }
 
     private func symbolImage(_ name: String, tint: NSColor, title: String) -> NSImage? {
@@ -311,12 +365,18 @@ private final class HUDCardView: NSVisualEffectView {
             .withSymbolConfiguration(config)
     }
 
-    private func applyTransparencyFallback() {
-        if AccessibilityState.shared.reduceTransparency {
+    /// Read from the system each time (not from `AccessibilityState`, which may not
+    /// have heard the change yet), and undone again when the setting is switched off.
+    func refreshTransparency() {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
             material = .windowBackground
             layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
             layer?.borderWidth = 1
             layer?.borderColor = NSColor.separatorColor.cgColor
+        } else {
+            material = .hudWindow
+            layer?.backgroundColor = nil
+            layer?.borderWidth = 0
         }
     }
 }

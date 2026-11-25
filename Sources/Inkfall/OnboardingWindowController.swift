@@ -55,6 +55,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
         window.title = "Welcome to Inkfall"
+        window.isReleasedWhenClosed = false
         // Lock the size so the window doesn't change dimensions between steps.
         window.contentMinSize = NSSize(width: 660, height: 520)
         window.contentMaxSize = NSSize(width: 660, height: 520)
@@ -191,6 +192,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         guard !didAutoDownloadModel else { return }
         didAutoDownloadModel = true
 
+        whisperProgress.setAccessibilityLabel("Speech model download")
         whisperProgress.isHidden = false
         whisperProgress.isIndeterminate = true
         whisperProgress.startAnimation(nil)
@@ -198,7 +200,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
 
         let model = config.whisperKitModelName
         Task { @MainActor [weak self] in
-            let ok = await WhisperKitEngine.shared.prewarm(model: model)
+            let ok = await WhisperKitEngine.shared.prewarm(model: model, allowDownload: true)
             guard let self else { return }
             self.whisperProgress.stopAnimation(nil)
             self.whisperProgress.isHidden = true
@@ -258,6 +260,9 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         row.alignment = .centerY
         row.spacing = 10
         row.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        row.setAccessibilityElement(true)
+        row.setAccessibilityRole(.staticText)
+        row.setAccessibilityLabel("\(candidate.railTitle), \(done ? "done" : (active ? "current step" : "later"))")
         return row
     }
 
@@ -316,6 +321,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private func permissionRow(_ name: String, _ chip: StatusChip, detail: String, button: String, action: Selector) -> NSView {
         let card = CardView(cornerRadius: 10)
 
+        chip.contextName = name
         let nameLabel = NSTextField(labelWithString: name)
         nameLabel.font = .systemFont(ofSize: 14, weight: .semibold)
 
@@ -382,6 +388,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         field.translatesAutoresizingMaskIntoConstraints = false
         field.widthAnchor.constraint(equalToConstant: 400).isActive = true
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 76).isActive = true
+        field.setAccessibilityLabel("Try it: your dictated words appear here")
         tryItField = field
 
         return column([
@@ -426,7 +433,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private func permissionsNote(_ text: String) -> NSView {
         let label = NSTextField(wrappingLabelWithString: text)
         label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = InkfallDesign.ember
+        label.textColor = InkfallDesign.emberText
         label.preferredMaxLayoutWidth = 400
         return label
     }
@@ -452,7 +459,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     private func eyebrow(_ text: String) -> NSView {
         let label = NSTextField(labelWithString: text.uppercased())
         label.font = .systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = InkfallDesign.ember
+        label.textColor = InkfallDesign.emberText
         return label
     }
 
@@ -520,7 +527,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         var updated = config
         updated.onboardingCompleted = true
 
-        try? updated.save()
+        try? updated.saveKeepingEnvironmentValues(loaded: config)
         config = updated
         onSave(updated)
         onFinished()
