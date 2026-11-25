@@ -63,6 +63,23 @@ struct TranscriptNormalizer: Sendable {
         return text
     }
 
+    /// For a model's rewrite of text with dictated line breaks: every line starts with a
+    /// capital, as the rule-based text does. A word that carries its own capitals further
+    /// in ("iPhone") is left as written. Nothing else in the model's text is touched.
+    func capitalizeLineStarts(_ input: String) -> String {
+        input.components(separatedBy: "\n").map { line -> String in
+            guard let first = line.firstIndex(where: { $0.isLetter }) else { return line }
+            let lead = line[line.startIndex..<first]
+            guard lead.allSatisfy({ $0.isWhitespace || "-*•\"'“‘([".contains($0) }) else { return line }
+            guard line[first].isLowercase else { return line }
+            let word = line[first...].prefix(while: { $0.isLetter || $0.isNumber })
+            if word.dropFirst().contains(where: { $0.isUppercase }) { return line }
+            var out = line
+            out.replaceSubrange(first...first, with: String(line[first]).uppercased())
+            return out
+        }.joined(separator: "\n")
+    }
+
     /// "scratch that", "delete that" and "never mind" are commands only when they stand
     /// alone: punctuation (or the start) before, punctuation (or the end) after. Then the
     /// phrase and the sentence before it go; everything earlier stays.

@@ -16,7 +16,8 @@ struct AppleFoundationRewriter: TranscriptRewriter {
     Remove filler words (um, uh, like, you know) and resolve false starts and \
     self-corrections. Preserve the original meaning, wording, and tone exactly — do \
     not summarize, translate, answer questions, or add anything that was not said. \
-    Output only the cleaned text, with no preamble, quotes, or commentary.
+    Keep every line break exactly where it is: never join two lines into one and never \
+    add a line break. Output only the cleaned text, with no preamble, quotes, or commentary.
     """
 
     /// Whether the on-device model can be used right now: supported device + Apple
@@ -63,7 +64,7 @@ struct AppleFoundationRewriter: TranscriptRewriter {
         // Frame the input as text-to-edit, not a question, so a dictated question
         // ("what time is it") gets cleaned up rather than answered.
         let response = try await session.respond(to: "Dictated text to clean up:\n\n\(transcript)")
-        let clean = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = RewriteGuard.tidied(response.content)
         // A model that answered, summarised or expanded is not editing: let the
         // composite fall back to the rule-based text.
         guard RewriteGuard.accepts(input: transcript, output: clean) else {

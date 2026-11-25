@@ -66,10 +66,11 @@ struct LlamaCLIRewriter: TranscriptRewriter {
         }
 
         let decoded = try JSONDecoder().decode(CleanedTranscript.self, from: data)
-        guard RewriteGuard.accepts(input: transcript, output: decoded.cleanText) else {
+        let clean = RewriteGuard.tidied(decoded.cleanText)
+        guard RewriteGuard.accepts(input: transcript, output: clean) else {
             throw InkfallError.rewriteRejected
         }
-        return decoded
+        return CleanedTranscript(cleanText: clean)
     }
 
     private func extractJSONObject(from output: String) -> String {

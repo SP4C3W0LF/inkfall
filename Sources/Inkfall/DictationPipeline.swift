@@ -88,6 +88,10 @@ final class DictationPipeline: Sendable {
         }
         // A rewrite that takes too long is not an error: the rule-based text is still good.
         var result = rewritten ?? CleanedTranscript(cleanText: normalizer.finalize(normalized))
+        // A model asked to keep dictated lines apart often leaves them in lower case.
+        if result.cleanText.contains("\n") {
+            result = CleanedTranscript(cleanText: normalizer.capitalizeLineStarts(result.cleanText))
+        }
         // Last, so it applies to the model's rewrite and the rule-based text alike.
         result = CleanedTranscript(
             cleanText: FirstLetterPolicy.apply(
@@ -116,7 +120,30 @@ enum RewriteGuard {
         guard !outputWords.isEmpty else { return false }
         let inputWords = Set(words(in: input))
         let shared = outputWords.filter { inputWords.contains($0) }.count
-        return Double(shared) >= Double(outputWords.count) * 0.6
+        guard Double(shared) >= Double(outputWords.count) * 0.6 else { return false }
+
+        // A line break in the input was dictated ("new line", "new paragraph", a bullet).
+        // A model that joins the lines or moves a break has undone that, so its output
+        // is dropped and the rule-based text, which keeps every break, is used.
+        if input.contains("\n"), lineShape(of: input) != lineShape(of: cleaned) { return false }
+        return true
+    }
+
+    /// A model's output ready to compare and insert: trimmed, and without the blanks some
+    /// models leave before a line break ("milk  \n").
+    static func tidied(_ output: String) -> String {
+        output
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: #"[ \t]+\n"#, with: "\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Which lines hold text and which are blank, in order: the same for two texts exactly
+    /// when every line break and paragraph break sits between the same lines.
+    private static func lineShape(of text: String) -> [Bool] {
+        tidied(text).components(separatedBy: "\n").map {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }
     }
 
     private static func words(in text: String) -> [String] {

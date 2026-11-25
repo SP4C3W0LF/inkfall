@@ -75,8 +75,12 @@ final class DictationHUDWindowController: NSWindowController {
     }
 
     /// The system's Reduce Transparency setting changed while the app runs.
-    func refreshAppearance() {
-        card.refreshTransparency()
+    func refreshAppearance(
+        reduceTransparency: Bool = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+    ) {
+        card.refreshTransparency(reduce: reduceTransparency)
+        // The card's outline changed, and the window's shadow is drawn from it.
+        window?.invalidateShadow()
     }
 
     // MARK: Auto-hide
@@ -183,10 +187,18 @@ private protocol HUDAnimating: AnyObject {
 
 // MARK: - Card
 
-private final class HUDCardView: NSVisualEffectView {
+private final class HUDCardView: NSView {
     var onAction: ((HUDAction) -> Void)?
     var levelProvider: (() -> Float)?
 
+    private static let cornerRadius: CGFloat = 20
+    /// The see-through backing. With transparency reduced it is hidden and the content
+    /// moves out of it: the solid stand-in the system draws for a material is not clipped
+    /// by a layer's rounded corners, and showed as a white rectangle behind the card.
+    private let backing = NSVisualEffectView()
+    private let row = NSStackView()
+    private var rowConstraints: [NSLayoutConstraint] = []
+    private var reducing = false
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
@@ -196,15 +208,31 @@ private final class HUDCardView: NSVisualEffectView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        material = .hudWindow
-        blendingMode = .behindWindow
-        state = .active
-        wantsLayer = true
-        layer?.cornerRadius = 20
-        layer?.cornerCurve = .continuous
-        layer?.masksToBounds = true
+        for view in [self, backing] {
+            view.wantsLayer = true
+            view.layer?.cornerRadius = Self.cornerRadius
+            view.layer?.cornerCurve = .continuous
+            view.layer?.masksToBounds = true
+        }
+        backing.material = .hudWindow
+        backing.blendingMode = .behindWindow
+        backing.state = .active
+        backing.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(backing)
+        NSLayoutConstraint.activate([
+            backing.leadingAnchor.constraint(equalTo: leadingAnchor),
+            backing.trailingAnchor.constraint(equalTo: trailingAnchor),
+            backing.topAnchor.constraint(equalTo: topAnchor),
+            backing.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
         build()
         refreshTransparency()
+    }
+
+    /// Light and dark give the solid card different colours.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshTransparency(reduce: reducing)
     }
 
     required init?(coder: NSCoder) {
@@ -236,21 +264,32 @@ private final class HUDCardView: NSVisualEffectView {
         rightCluster.alignment = .centerY
         rightCluster.spacing = 10
 
-        let row = NSStackView(views: [iconView, textStack, NSView.spacer(), rightCluster])
+        [iconView, textStack, NSView.spacer(), rightCluster].forEach(row.addArrangedSubview)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 12
         row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
 
         NSLayoutConstraint.activate([
             iconView.widthAnchor.constraint(equalToConstant: 26),
-            iconView.heightAnchor.constraint(equalToConstant: 26),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14)
+            iconView.heightAnchor.constraint(equalToConstant: 26)
         ])
+    }
+
+    /// The content sits inside the backing (where its text gets the material's vibrancy)
+    /// or, when the backing is hidden, directly on the card.
+    private func placeRow(in host: NSView) {
+        guard row.superview !== host else { return }
+        NSLayoutConstraint.deactivate(rowConstraints)
+        row.removeFromSuperview()
+        host.addSubview(row)
+        rowConstraints = [
+            row.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 18),
+            row.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -18),
+            row.topAnchor.constraint(equalTo: host.topAnchor, constant: 14),
+            row.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -14)
+        ]
+        NSLayoutConstraint.activate(rowConstraints)
     }
 
     func apply(_ model: HUDModel) {
@@ -367,14 +406,20 @@ private final class HUDCardView: NSVisualEffectView {
 
     /// Read from the system each time (not from `AccessibilityState`, which may not
     /// have heard the change yet), and undone again when the setting is switched off.
-    func refreshTransparency() {
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
-            material = .windowBackground
-            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    ///
+    /// Reduced: no material at all, only this view's own rounded layer with a solid fill
+    /// and an outline. Otherwise: the material, and nothing drawn by the layer.
+    func refreshTransparency(reduce: Bool = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency) {
+        reducing = reduce
+        backing.isHidden = reduce
+        placeRow(in: reduce ? self : backing)
+        if reduce {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+                layer?.borderColor = NSColor.separatorColor.cgColor
+            }
             layer?.borderWidth = 1
-            layer?.borderColor = NSColor.separatorColor.cgColor
         } else {
-            material = .hudWindow
             layer?.backgroundColor = nil
             layer?.borderWidth = 0
         }
