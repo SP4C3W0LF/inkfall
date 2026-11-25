@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="design/export/readme-lockup-dark.svg">
-    <img src="design/export/readme-lockup-light.svg" alt="Inkfall" width="360">
-  </picture>
+  <img src="Resources/Assets.xcassets/AppIcon.appiconset/icon_256.png" alt="Inkfall" width="128">
 </p>
 
 # Inkfall
@@ -81,14 +78,6 @@ or set the equivalent keys (`whisperBinaryPath`, `whisperModelPath`, `llamaBinar
 With `llama-cli`, the transcript is passed as a command-line argument, so other processes of the same user can see it while it runs.
 
 If `config.json` cannot be read, Inkfall copies it to `config.json.bad-<date>` beside it, starts with defaults, and says so in Settings. Closing Settings with unsaved changes asks whether to save.
-
-## Tests
-
-```sh
-swift test
-```
-
-`ci/release.sh <version> --dry-run` runs the same tests and then makes an unsigned build and disk image. It needs no secrets.
 
 ## Privacy verification
 
