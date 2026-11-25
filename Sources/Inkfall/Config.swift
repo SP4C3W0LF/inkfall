@@ -314,6 +314,9 @@ struct InkfallConfig: Codable, Sendable {
 struct PipelineContext: Sendable {
     let vocabulary: [String]
     let targetAppName: String?
+    /// The Mac's "Capitalize words automatically" setting at the moment of dictation.
+    /// See `FirstLetterPolicy`.
+    var capitalizeFirstLetter: Bool = true
 }
 
 enum ConfigError: LocalizedError {

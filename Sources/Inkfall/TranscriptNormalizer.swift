@@ -11,9 +11,11 @@ struct TranscriptNormalizer: Sendable {
         options: [.caseInsensitive]
     )
     private static let fillerWord = #"(?<![\p{L}\p{N}'’-])(?:um+|uh+|erm+)(?![\p{L}\p{N}'’-])"#
+    // The engine writes these as "new line", "newline" or "new-line"; "next line" is the
+    // same command. The gap is a run of blanks or one hyphen.
     private static let formattingCommands: [(NSRegularExpression, String)] = [
-        ("new paragraph", "\n\n"),
-        ("new line", "\n"),
+        (#"new(?:[ \t]+|-)?paragraph"#, "\n\n"),
+        (#"(?:new(?:[ \t]+|-)?|next(?:[ \t]+|-))line"#, "\n"),
         ("bullet list", "\n- "),
         ("next bullet", "\n- ")
     ].map { phrase, replacement in
@@ -31,10 +33,20 @@ struct TranscriptNormalizer: Sendable {
         "is", "are", "was", "were", "of", "character", "characters", "break", "breaks"
     ]
 
+    private static let spokenMarkPhrase = try! NSRegularExpression(
+        pattern: #"(?<![\p{L}\p{N}'’])(?<!\p{L}-)(?:question(?:[ \t]+|-)mark|exclamation(?:[ \t]+|-)(?:mark|point)|full(?:[ \t]+|-)stop|semi(?:[ \t]+|-)?colon|colon|comma|period)(?![\p{L}\p{N}'’]|-\p{L})"#,
+        options: [.caseInsensitive]
+    )
+    /// Extra "talked about" words after a spoken mark: "the comma key", "comma separated values".
+    private static let spokenTalkedAboutAfter: Set<String> = [
+        "key", "keys", "symbol", "symbols", "sign", "signs", "separated"
+    ]
+
     func normalize(_ input: String, vocabulary: [String]) -> String {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         text = applyCorrectionCommands(text)
         text = applyFormattingCommands(text)
+        text = applySpokenPunctuation(text)
         text = removeFillers(text)
         text = applyVocabulary(text, vocabulary: vocabulary)
         text = collapseWhitespace(text)
@@ -150,6 +162,96 @@ struct TranscriptNormalizer: Sendable {
         return text
     }
 
+    /// "question mark", "comma", "full stop" and the rest become the mark itself, attached to
+    /// the word before it, replacing any mark the engine put there. Left to right, so a
+    /// mark produced here is final and a second one right after it can build on it ("?!").
+    private func applySpokenPunctuation(_ input: String) -> String {
+        guard Self.spokenMarkPhrase.firstMatch(
+            in: input, range: NSRange(location: 0, length: (input as NSString).length)) != nil
+        else { return input }
+
+        let text = NSMutableString(string: input)
+        var from = 0
+        var lastMark: Int?
+        while from < text.length {
+            guard let match = Self.spokenMarkPhrase.firstMatch(
+                in: text as String, options: [.withTransparentBounds],
+                range: NSRange(location: from, length: text.length - from)) else { break }
+            let range = match.range
+            let end = range.location + range.length
+            let spoken = text.substring(with: range).lowercased()
+
+            let previous = wordEnding(at: range.location, in: text)
+            let next = wordStarting(at: end, in: text)
+            var talkedAbout = false
+            if let previous, Self.talkedAboutBefore.contains(previous) { talkedAbout = true }
+            if let next, Self.talkedAboutAfter.contains(next) || Self.spokenTalkedAboutAfter.contains(next) {
+                talkedAbout = true
+            }
+            // "a difficult period" is speech: the word only counts as a mark on its own.
+            if spoken == "period", !isStandalone(range, in: text) { talkedAbout = true }
+            if talkedAbout { from = end; continue }
+
+            let mark = spokenMark(for: spoken)
+
+            // What the mark attaches to: back over blanks, the engine's own marks, blanks.
+            var lead = range.location
+            while lead > 0, isBlank(text.character(at: lead - 1)) { lead -= 1 }
+            if let last = lastMark, lead == last + 1, "?!".contains(mark), "?!".contains(spokenMarkChar(at: last, in: text)) {
+                // "question mark exclamation mark": keep the first, add the second.
+            } else {
+                while lead > 0, isSpokenMarkPunctuation(text.character(at: lead - 1)) { lead -= 1 }
+                while lead > 0, isBlank(text.character(at: lead - 1)) { lead -= 1 }
+            }
+
+            // Marks the engine put after the phrase belong to it too.
+            var tail = end
+            while tail < text.length, isBlank(text.character(at: tail)) { tail += 1 }
+            while tail < text.length, isSpokenMarkPunctuation(text.character(at: tail)) { tail += 1 }
+            while tail < text.length, isBlank(text.character(at: tail)) { tail += 1 }
+
+            // Nothing to attach to (start of the text or of a line, or an opening bracket).
+            let opens = lead == 0 || text.character(at: lead - 1) == 10
+                || "([{\u{201C}\u{2018}".utf16.contains(text.character(at: lead - 1))
+            if opens {
+                text.replaceCharacters(in: NSRange(location: range.location, length: tail - range.location), with: "")
+                from = range.location
+                lastMark = nil
+                continue
+            }
+
+            var gap = " "
+            if tail >= text.length { gap = "" } else {
+                let following = text.character(at: tail)
+                if following == 10 || ")]}\u{201D}\u{2019}".utf16.contains(following) { gap = "" }
+                // A straight quote closes when an odd number of them came before.
+                if following == 34, text.substring(to: lead).filter({ $0 == "\"" }).count % 2 == 1 { gap = "" }
+            }
+            text.replaceCharacters(in: NSRange(location: lead, length: tail - lead), with: mark + gap)
+            lastMark = lead
+            from = lead + 1
+        }
+        return text as String
+    }
+
+    private func spokenMark(for phrase: String) -> String {
+        if phrase.hasPrefix("question") { return "?" }
+        if phrase.hasPrefix("exclamation") { return "!" }
+        if phrase.hasPrefix("semi") { return ";" }
+        if phrase == "colon" { return ":" }
+        if phrase == "comma" { return "," }
+        return "."  // full stop, period
+    }
+
+    private func spokenMarkChar(at index: Int, in text: NSString) -> String {
+        text.substring(with: NSRange(location: index, length: 1))
+    }
+
+    /// The marks an engine puts around a spoken one. Dashes are left alone.
+    private func isSpokenMarkPunctuation(_ unit: unichar) -> Bool {
+        ".,!?;:\u{2026}".utf16.contains(unit)
+    }
+
     private func wordEnding(at index: Int, in ns: NSString) -> String? {
         var end = index
         while end > 0, isBlank(ns.character(at: end - 1)) { end -= 1 }
@@ -181,6 +283,8 @@ struct TranscriptNormalizer: Sendable {
         // A comma after the filler goes with it; failing that, a comma before it.
         text = replace(#"(?i)"# + word + #"[ \t]*,"#, in: text, with: "")
         text = replace(#"(?i),[ \t]*"# + word, in: text, with: "")
+        // Before a mark ("send it um."): the blank before it goes too.
+        text = replace(#"(?i)[ \t]+"# + word + #"(?=[ \t]*[.!?;:…])"#, in: text, with: "")
         text = replace(#"(?i)"# + word, in: text, with: "")
         // An aside between two commas: it takes the comma after it.
         text = replace(#"(?i),[ \t]*(?:you know|i mean)[ \t]*,"#, in: text, with: ",")
@@ -261,7 +365,8 @@ struct TranscriptNormalizer: Sendable {
 
     private func ensureTerminalPunctuation(_ input: String) -> String {
         guard let last = input.last else { return input }
-        if ".!?".contains(last) { return input }
+        // A sentence can end on a spoken comma, colon or semicolon ("Dear Sam:").
+        if ".!?,:;".contains(last) { return input }
         if input.contains("\n- ") { return input }
         return input + "."
     }

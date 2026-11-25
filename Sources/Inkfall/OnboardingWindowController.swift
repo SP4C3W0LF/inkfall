@@ -601,3 +601,18 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
     }
 
 }
+
+// MARK: - Layout test hook
+
+/// Used only by `SettingsLayoutTests` (no callers in the app). The permissions and speech
+/// steps are left out on purpose: showing them asks for permissions and starts a model
+/// download, which a test must never do.
+extension OnboardingWindowController {
+    static let stepsSafeToMeasure = [0, 1, 4, 5, 6]
+
+    func showStepForTesting(_ index: Int) {
+        guard let next = Step(rawValue: index) else { return }
+        step = next
+        renderStep()
+    }
+}

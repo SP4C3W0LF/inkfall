@@ -55,6 +55,12 @@ protocol DictationSystem {
     var isAccessibilityTrusted: Bool { get }
     var frontmostPID: pid_t? { get }
     var frontmostAppName: String? { get }
+    /// The Mac's "Capitalize words automatically" typing setting.
+    var capitalizesAutomatically: Bool { get }
+}
+
+extension DictationSystem {
+    var capitalizesAutomatically: Bool { true }
 }
 
 @MainActor
@@ -64,6 +70,7 @@ struct LiveDictationSystem: DictationSystem {
     var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
     var frontmostPID: pid_t? { NSWorkspace.shared.frontmostApplication?.processIdentifier }
     var frontmostAppName: String? { NSWorkspace.shared.frontmostApplication?.localizedName }
+    var capitalizesAutomatically: Bool { FirstLetterPolicy.systemCapitalizes() }
 }
 
 @MainActor
@@ -473,7 +480,8 @@ final class DictationController {
         startSlowWorkTimer(id)
         let context = PipelineContext(
             vocabulary: config.customVocabulary,
-            targetAppName: system.frontmostAppName
+            targetAppName: system.frontmostAppName,
+            capitalizeFirstLetter: system.capitalizesAutomatically
         )
         let showsPolishing = config.rewriteEnabled
 

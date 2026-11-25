@@ -88,7 +88,15 @@ final class DictationPipeline: Sendable {
         }
         // A rewrite that takes too long is not an error: the rule-based text is still good.
         var result = rewritten ?? CleanedTranscript(cleanText: normalizer.finalize(normalized))
-        result.rawText = transcript.rawText
+        // Last, so it applies to the model's rewrite and the rule-based text alike.
+        result = CleanedTranscript(
+            cleanText: FirstLetterPolicy.apply(
+                result.cleanText,
+                capitalize: context.capitalizeFirstLetter,
+                vocabulary: context.vocabulary
+            ),
+            rawText: transcript.rawText
+        )
         return result
     }
 }

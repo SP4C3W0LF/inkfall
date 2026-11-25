@@ -50,7 +50,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     private let whisperBinaryStatus = StatusChip()
     private let whisperModelStatus = StatusChip()
     private let whisperProgress = SettingsControls.progressBar()
-    private let whisperProgressLabel = SettingsControls.captionLabel("")
+    private let whisperProgressLabel = SettingsControls.captionLabel("", maxWidth: 200)
     private var whisperDownload: ModelDownloadJob?
     private let whisperCancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let languageHint = SettingsControls.captionLabel(SettingsWindowController.languageHintText)
@@ -66,7 +66,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     private let llamaBinaryStatus = StatusChip()
     private let llamaModelStatus = StatusChip()
     private let llamaProgress = SettingsControls.progressBar()
-    private let llamaProgressLabel = SettingsControls.captionLabel("")
+    private let llamaProgressLabel = SettingsControls.captionLabel("", maxWidth: 200)
     private var llamaDownload: ModelDownloadJob?
     private let llamaCancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let rewriteEnginePopup = NSPopUpButton()
@@ -88,7 +88,8 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
     private let accessibilityStatus = StatusChip()
 
     private let scrollView = NSScrollView()
-    private let footerStatus = SettingsControls.captionLabel("")
+    // Room beside the Save button: 520 minus the button (about 70) and two 10 point gaps.
+    private let footerStatus = SettingsControls.captionLabel("", maxWidth: 420)
     private var panes: [SettingsTab: NSView] = [:]
     private var permissionsTimer: Timer?
     // Collapsible "Advanced" bodies, keyed by their toggle's tag.
@@ -520,6 +521,11 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         labelField.widthAnchor.constraint(equalToConstant: 108).isActive = true
 
         control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // A long item name (a custom model, say) shortens in the popup instead of widening the window.
+        if let popup = control as? NSPopUpButton {
+            popup.setContentCompressionResistancePriority(SettingsControls.squeezable, for: .horizontal)
+            popup.lineBreakMode = .byTruncatingMiddle
+        }
         // The row label is a separate text field, so tie it to the control for VoiceOver.
         if !label.isEmpty, !(control is NSStackView) { control.setAccessibilityLabel(label) }
         let controlRow = NSStackView(views: [labelField, control])
@@ -528,6 +534,8 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         controlRow.spacing = 12
 
         guard let hintLabel = hintLabel ?? hint.map({ SettingsControls.captionLabel($0) }) else { return controlRow }
+        // Label column (108 + 12) is empty under the hint, so the hint has what is left.
+        hintLabel.preferredMaxLayoutWidth = SettingsControls.cardTextWidth - 120
         let spacer = NSView()
         spacer.widthAnchor.constraint(equalToConstant: 120).isActive = true
         let hintRow = NSStackView(views: [spacer, hintLabel])
@@ -552,6 +560,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 8
+        // A long path in a field must shorten in place, not widen the window: by default a
+        // stack refuses to clip its contents, which makes its fields' full text a minimum.
+        stack.setClippingResistancePriority(.defaultLow, for: .horizontal)
         return stack
     }
 
@@ -1109,7 +1120,7 @@ enum SettingsControls {
         field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         field.lineBreakMode = .byTruncatingMiddle
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(squeezable, for: .horizontal)
         field.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
         return field
     }
@@ -1123,12 +1134,25 @@ enum SettingsControls {
         return field
     }
 
-    static func captionLabel(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
+    /// Compression resistance of anything that may shrink or wrap instead of widening
+    /// the window. It must sit below AppKit's fitting-size priority (50), or the view's
+    /// full natural width still counts toward the minimum size.
+    static let squeezable = NSLayoutConstraint.Priority(49)
+
+    /// Inner width of a card (520 pane width minus the card's 16 + 16 insets).
+    static let cardTextWidth: CGFloat = 488
+
+    /// Small grey text. It wraps (never grows the window to fit one long line) and gives
+    /// way horizontally; `maxWidth` is the room it really has where it sits.
+    static func captionLabel(_ text: String, maxWidth: CGFloat = cardTextWidth) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.isSelectable = false
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byWordWrapping
-        label.maximumNumberOfLines = 2
+        label.maximumNumberOfLines = 0
+        label.preferredMaxLayoutWidth = maxWidth
+        label.setContentCompressionResistancePriority(squeezable, for: .horizontal)
         return label
     }
 
@@ -1231,5 +1255,43 @@ final class StatusChip: NSView {
     private func updateAccessibility() {
         let text = label.stringValue
         setAccessibilityLabel(contextName.map { "\($0): \(text)" } ?? text)
+    }
+}
+
+// MARK: - Layout test hooks
+
+/// Used only by `SettingsLayoutTests` (no callers in the app): select a pane and fill the
+/// window with the longest text it can realistically show, without ordering it on screen.
+extension SettingsWindowController {
+    func selectTabForTesting(_ tab: SettingsTab) { select(tab) }
+
+    func fillLongestContentForTesting() {
+        for tab in SettingsTab.allCases { _ = paneFor(tab) }
+        // An English-only model (shows the language hint) with a long custom name.
+        fill(whisperKitModelPopup, base: Self.modelChoices, current: "custom-medical-dictation-finetune-large-v3-distilled-2026.en")
+        updateLanguageAvailability()
+        // Both downloads running, with their Cancel buttons and the longest progress/failure text.
+        for (progress, label, cancel) in [
+            (whisperProgress, whisperProgressLabel, whisperCancelButton),
+            (llamaProgress, llamaProgressLabel, llamaCancelButton)
+        ] {
+            progress.isHidden = false
+            label.stringValue = "Failed: The downloaded model failed its integrity check and was removed from the folder."
+            cancel.isHidden = false
+        }
+        let longPath = "/Users/someone/Library/Application Support/Inkfall/Models/ggml-large-v3-turbo-q5_0-custom.bin"
+        for field in [whisperBinaryField, whisperModelField, whisperFolderField, whisperURLField,
+                      llamaBinaryField, llamaModelField, llamaFolderField, llamaURLField] {
+            field.stringValue = longPath
+        }
+        appleRewriteHint.stringValue = "Apple Intelligence is turned off. Turn it on in System Settings, then reopen this window to use Apple's on-device model for rewriting."
+        // Open both Advanced sections so their rows count.
+        for body in disclosureBodies.values { body.isHidden = false }
+    }
+
+    /// The unreadable-settings footer line. Call after `selectTabForTesting`, which
+    /// resets the footer to the validation message.
+    func setLongFooterForTesting() {
+        setFooter("config.json couldn't be read, so defaults are in use. A copy is saved as config.json.bad-20261125-120000.", tone: .warning)
     }
 }

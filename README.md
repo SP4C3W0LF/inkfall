@@ -40,8 +40,9 @@ Applied to the transcript before it is inserted:
 
 - **Corrections:** "scratch that" and "delete that", set off by punctuation, remove the sentence before them. "Never mind" does the same only when it opens its own sentence. Inside a sentence ("I told her, never mind, it's fine") all words are kept.
 - **Fillers:** "um", "uh", "erm" and stretched forms are removed with one neighbouring comma; "you know" and "I mean" only as an aside between commas.
-- **Formatting:** "new line", "new paragraph", "bullet list" and "next bullet" become line breaks and bullets. They stay as words when the surrounding words show you are talking about them ("a new line").
-- **Capitals** go at the start of sentences, not after things like "e.g." or inside web addresses.
+- **Formatting:** "new line" (also "next line"), "new paragraph", "bullet list" and "next bullet" become line breaks and bullets. They stay as words when the surrounding words show you are talking about them ("a new line").
+- **Punctuation:** "question mark", "exclamation mark" or "exclamation point", "comma", "full stop", "colon" and "semicolon" become the mark, attached to the word before. "Period" counts only on its own ("I am done. Period."), so "a difficult period" keeps its words. Talking about a mark keeps the words too ("the comma key").
+- **Capitals** go at the start of sentences, not after things like "e.g." or inside web addresses. The first letter follows your Mac: with System Settings ▸ Keyboard ▸ Text Input ▸ "Capitalize words automatically" turned off, dictated text starts in lower case (except "I", acronyms and words from your vocabulary).
 
 The untouched transcript stays available through `Copy original transcript`.
 

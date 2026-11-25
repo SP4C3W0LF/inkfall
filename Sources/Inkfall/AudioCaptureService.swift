@@ -45,12 +45,116 @@ struct EnergyVoiceActivityDetector: VoiceActivityDetector {
     }
 }
 
-final class AudioCaptureService: @unchecked Sendable {
+/// What the input node reports right now, as plain numbers. A rate or channel
+/// count of 0 means the route is not ready yet (seen for a moment at launch and
+/// while a Bluetooth headset switches its microphone on).
+struct CaptureInputFormat: Equatable, Sendable {
+    var sampleRate: Double
+    var channels: Int
+    var isValid: Bool { sampleRate > 0 && channels > 0 }
+}
+
+/// The few engine operations the capture service needs, so the retry and
+/// device-change logic can be tested with a fake and no microphone.
+protocol CaptureEngine: AnyObject {
+    /// Identity of the underlying engine, to match configuration-change notifications.
+    var engineID: ObjectIdentifier { get }
+    var isRunning: Bool { get }
+    /// The input node's format right now (read at the moment of use, never cached).
+    func inputFormat() -> CaptureInputFormat
+    /// Installs the tap on the input node. The handler gets channel 0 and the rate
+    /// of the buffer it came from. It runs on the audio thread.
+    func installTap(_ handler: @escaping @Sendable ([Float], Double) -> Void) throws
+    func removeTap()
+    func start() throws
+    func pause()
+    func stop()
+}
+
+/// The real engine. Kept thin on purpose: everything with a decision in it is in the service.
+final class LiveCaptureEngine: CaptureEngine {
     private let engine = AVAudioEngine()
+
+    var engineID: ObjectIdentifier { ObjectIdentifier(engine) }
+    var isRunning: Bool { engine.isRunning }
+
+    func inputFormat() -> CaptureInputFormat {
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        return CaptureInputFormat(sampleRate: format.sampleRate, channels: Int(format.channelCount))
+    }
+
+    func installTap(_ handler: @escaping @Sendable ([Float], Double) -> Void) throws {
+        let input = engine.inputNode
+        // A nil format makes the node use its own current format, so the tap never
+        // carries a stale one; the rate comes from each buffer.
+        if #available(macOS 27.0, *) {
+            // macOS 27 deprecated installTap(onBus:…block:) in favor of the throwing
+            // installAudioTap, whose block hands back a Sendable read-only buffer.
+            try input.installAudioTap(onBus: 0, bufferSize: 1_024, format: nil) { buffer, _ in
+                guard case .float(let span) = buffer.channelData(0) else { return }
+                let frameCount = min(buffer.frameLength, span.count)
+                guard frameCount > 0 else { return }
+                var samples: [Float] = []
+                samples.reserveCapacity(frameCount)
+                for index in 0..<frameCount { samples.append(span[index]) }
+                handler(samples, buffer.format.sampleRate)
+            }
+        } else {
+            // macOS 26 (Tahoe): the classic tap. Its buffer isn't Sendable, so the
+            // callback copies channel 0 into a [Float] before anything escapes.
+            input.installTap(onBus: 0, bufferSize: 1_024, format: nil) { buffer, _ in
+                guard let channel = buffer.floatChannelData?[0] else { return }
+                let frameCount = Int(buffer.frameLength)
+                guard frameCount > 0 else { return }
+                let samples = Array(UnsafeBufferPointer(start: channel, count: frameCount))
+                handler(samples, buffer.format.sampleRate)
+            }
+        }
+    }
+
+    func removeTap() { engine.inputNode.removeTap(onBus: 0) }
+    func start() throws { try engine.start() }
+    func pause() { engine.pause() }
+    func stop() { engine.stop() }
+}
+
+/// Thrown when the input reports no usable format yet.
+struct CaptureInputNotReady: LocalizedError {
+    var errorDescription: String? { "the input isn't ready" }
+}
+
+/// What the HUD shows when every attempt to start failed. Short, and it carries the
+/// CoreAudio code so a bug report can name it.
+func captureStartFailureMessage(for error: Error) -> String {
+    let ns = error as NSError
+    let detail: String
+    if ns.domain == "com.apple.coreaudio.avfaudio" {
+        detail = "error \(ns.code)"
+    } else {
+        detail = error.localizedDescription
+    }
+    return "Couldn't start the microphone (\(detail)). Try again or pick another input."
+}
+
+struct CaptureStartError: LocalizedError {
+    let underlying: Error
+    var errorDescription: String? { captureStartFailureMessage(for: underlying) }
+}
+
+final class AudioCaptureService: @unchecked Sendable {
+    /// Replaced, never reused after the input may have changed: an engine keeps the
+    /// old device's format, and every tap installed on it fails the same way (-10877).
+    private var engine: CaptureEngine
+    private let makeEngine: () -> CaptureEngine
+    private let sleep: (TimeInterval) -> Void
     private let queue = DispatchQueue(label: "Inkfall.AudioCapture")
     private let vad: VoiceActivityDetector
     private let targetSampleRate = 16_000.0
     private var state = CaptureState()
+
+    /// Waits before attempts 2, 3 and 4 (a Bluetooth headset needs a moment to
+    /// switch its microphone on). Four attempts in all, about a second at worst.
+    static let retryDelays: [TimeInterval] = [0.15, 0.3, 0.6]
 
     // Live input level (RMS, ~0...1 scaled), read from the main thread by the HUD
     // waveform. Written on the audio thread; guarded by a lock.
@@ -70,44 +174,52 @@ final class AudioCaptureService: @unchecked Sendable {
     /// Set once, before the first start().
     var onInterrupted: (@Sendable (String) -> Void)?
 
-    // Observer token for the engine's configuration-change notification. The
+    // Observer token for the engines' configuration-change notification. The
     // service lives as long as the app, so it is never removed (and a nonisolated
-    // deinit could not touch it anyway).
+    // deinit could not touch it anyway). It watches every engine and ignores the
+    // ones that are not the current one.
     private var configurationObserver: NSObjectProtocol?
 
-    init(vad: VoiceActivityDetector) {
+    init(
+        vad: VoiceActivityDetector,
+        makeEngine: @escaping () -> CaptureEngine = { LiveCaptureEngine() },
+        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) {
         self.vad = vad
+        self.makeEngine = makeEngine
+        self.sleep = sleep
+        self.engine = makeEngine()
         // The block runs on whatever thread AVFoundation posts from, so it touches
         // nothing but the service's own serial queue, exactly like the tap callback.
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
-            object: engine,
+            object: nil,
             queue: nil
-        ) { [weak self] _ in
-            self?.handleConfigurationChange()
+        ) { [weak self] note in
+            guard let object = note.object else { return }
+            self?.handleConfigurationChange(from: ObjectIdentifier(object as AnyObject))
         }
     }
 
     /// The input device changed (headphones, a different default mic, a sample-rate
-    /// switch, a Bluetooth headset changing profile). The engine has stopped and the
-    /// tap's format is stale, so drop the tap. Not recording: the next start installs
-    /// one for the new device. Recording: keep what was captured and try to carry on
-    /// with a fresh tap (its rate is read again from the new format); only if that
+    /// switch, a Bluetooth headset changing profile). The engine has stopped and its
+    /// format is stale, so it is dropped for a fresh one. Not recording: the next
+    /// start uses the fresh engine. Recording: keep what was captured and carry on
+    /// with a fresh engine and tap (with the same retries as a start); only if that
     /// fails, or the changes keep coming, stop and hand back what was captured.
-    private func handleConfigurationChange() {
+    func handleConfigurationChange(from id: ObjectIdentifier) {
         queue.async {
+            // A notification from an engine that was already replaced is old news.
+            guard id == self.engine.engineID else { return }
             let change = self.state.configurationChanged(at: ProcessInfo.processInfo.systemUptime)
-            self.engine.stop()
-            self.engine.inputNode.removeTap(onBus: 0)
+            self.replaceEngine()
             switch change {
             case .ignored:
                 self.setLevel(0)
             case .resume:
                 do {
-                    try self.installTapIfNeeded()
-                    try self.engine.start()
+                    try self.bringUp()
                 } catch {
-                    if self.state.tapInstalled { self.engine.inputNode.removeTap(onBus: 0) }
                     self.state.resumeFailed()
                     self.setLevel(0)
                     self.onInterrupted?("The audio device changed. Try again.")
@@ -119,6 +231,9 @@ final class AudioCaptureService: @unchecked Sendable {
         }
     }
 
+    /// Waits for everything queued so far (tests only).
+    func waitUntilIdle() { queue.sync {} }
+
     func start() throws {
         try queue.sync {
             // Reset only the per-recording fields. `tapInstalled` MUST persist: the tap
@@ -126,15 +241,11 @@ final class AudioCaptureService: @unchecked Sendable {
             // throws "required condition is false: nullptr == Tap()".
             guard state.begin() else { return }
             do {
-                try installTapIfNeeded()
-                if !engine.isRunning {
-                    try engine.start()
-                }
+                try bringUp()
             } catch {
                 // Leave nothing half-done: a stuck isRecording would make every later
                 // start() a silent no-op, and a half-installed tap would make the
-                // next install throw.
-                if state.tapInstalled { engine.inputNode.removeTap(onBus: 0) }
+                // next install throw. bringUp already dropped the engine and its tap.
                 state.startFailed()
                 throw error
             }
@@ -154,87 +265,68 @@ final class AudioCaptureService: @unchecked Sendable {
         }
     }
 
-    private func installTapIfNeeded() throws {
-        guard !state.tapInstalled else { return }
+    // MARK: - Engine lifecycle (all on `queue`)
 
-        let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        let inputRate = inputFormat.sampleRate
-        if #available(macOS 27.0, *) {
-            // macOS 27 deprecated installTap(onBus:…block:) in favor of the throwing
-            // installAudioTap, whose block hands back a Sendable read-only buffer.
-            try input.installAudioTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-                self?.append(buffer: buffer, inputRate: inputRate)
-            }
-        } else {
-            // macOS 26 (Tahoe): the classic tap. Its buffer isn't Sendable, so the
-            // callback copies channel 0 into a [Float] before anything escapes.
-            input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-                self?.append(buffer: buffer, inputRate: inputRate)
-            }
-        }
-
-        state.tapInstalled = true
+    /// Drops the current engine (tap off, stopped) and builds a fresh one.
+    private func replaceEngine() {
+        engine.removeTap()
+        engine.stop()
+        engine = makeEngine()
+        state.tapInstalled = false
     }
 
-    @available(macOS 27.0, *)
-    private func append(buffer: AVReadOnlyAudioPCMBuffer, inputRate: Double) {
-        guard case .float(let span) = buffer.channelData(0) else { return }
-        let frameCount = min(buffer.frameLength, span.count)
-        guard frameCount > 0 else { return }
-
-        // Downsample channel 0 to the target rate, reading directly from the
-        // borrowed span (never escapes: only the resulting [Float] leaves scope).
-        var samples: [Float] = []
-        if abs(inputRate - targetSampleRate) < 1 {
-            samples.reserveCapacity(frameCount)
-            for index in 0..<frameCount { samples.append(span[index]) }
-        } else {
-            let ratio = inputRate / targetSampleRate
-            let outputCount = Int(Double(frameCount) / ratio)
-            guard outputCount > 0 else { return }
-            samples.reserveCapacity(outputCount)
-            for index in 0..<outputCount {
-                let sourceIndex = min(frameCount - 1, Int(Double(index) * ratio))
-                samples.append(span[sourceIndex])
+    /// Starts the current engine, and on failure swaps in a fresh one and tries
+    /// again after a short wait: up to 4 attempts. Throws a readable error when
+    /// every attempt failed; the engine left behind is fresh and untapped.
+    private func bringUp() throws {
+        var lastError: Error = CaptureInputNotReady()
+        for attempt in 0...Self.retryDelays.count {
+            do {
+                try startCurrentEngine()
+                return
+            } catch {
+                lastError = error
+                replaceEngine()
+                if attempt < Self.retryDelays.count { sleep(Self.retryDelays[attempt]) }
             }
         }
+        throw CaptureStartError(underlying: lastError)
+    }
 
-        // Snapshot to an immutable value before it crosses into the audio queue,
-        // so Swift 6 concurrency checking is satisfied (no captured `var`).
-        let downsampled = samples
-        publishLevel(for: downsampled)
-
-        queue.async {
-            guard self.state.isRecording else { return }
-            self.state.recordedSamples.append(contentsOf: downsampled)
+    private func startCurrentEngine() throws {
+        // Read now, never cached; an input that is not ready is a failed attempt.
+        guard engine.inputFormat().isValid else { throw CaptureInputNotReady() }
+        if !state.tapInstalled {
+            try engine.installTap { [weak self] samples, inputRate in
+                self?.append(samples: samples, inputRate: inputRate)
+            }
+            state.tapInstalled = true
+        }
+        if !engine.isRunning {
+            try engine.start()
         }
     }
 
-    /// Tahoe fallback: same downsampling as the macOS 27 path, reading the classic
-    /// buffer's float channel pointer (valid only inside the tap callback; only the
-    /// resulting [Float] leaves scope).
-    private func append(buffer: AVAudioPCMBuffer, inputRate: Double) {
-        guard let channel = buffer.floatChannelData?[0] else { return }
-        let frameCount = Int(buffer.frameLength)
-        guard frameCount > 0 else { return }
+    // MARK: - Tap callback (audio thread: no main-actor state, no new locks)
 
+    /// Down-samples channel 0 to the target rate by picking samples.
+    static func downsample(_ input: [Float], from inputRate: Double, to targetRate: Double) -> [Float] {
+        guard !input.isEmpty else { return [] }
+        if abs(inputRate - targetRate) < 1 { return input }
+        let ratio = inputRate / targetRate
+        let outputCount = Int(Double(input.count) / ratio)
+        guard outputCount > 0 else { return [] }
         var samples: [Float] = []
-        if abs(inputRate - targetSampleRate) < 1 {
-            samples.reserveCapacity(frameCount)
-            for index in 0..<frameCount { samples.append(channel[index]) }
-        } else {
-            let ratio = inputRate / targetSampleRate
-            let outputCount = Int(Double(frameCount) / ratio)
-            guard outputCount > 0 else { return }
-            samples.reserveCapacity(outputCount)
-            for index in 0..<outputCount {
-                let sourceIndex = min(frameCount - 1, Int(Double(index) * ratio))
-                samples.append(channel[sourceIndex])
-            }
+        samples.reserveCapacity(outputCount)
+        for index in 0..<outputCount {
+            samples.append(input[min(input.count - 1, Int(Double(index) * ratio))])
         }
+        return samples
+    }
 
-        let downsampled = samples
+    func append(samples input: [Float], inputRate: Double) {
+        let downsampled = Self.downsample(input, from: inputRate, to: targetSampleRate)
+        guard !downsampled.isEmpty else { return }
         publishLevel(for: downsampled)
 
         queue.async {
