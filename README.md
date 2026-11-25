@@ -50,7 +50,7 @@ The untouched transcript stays available through `Copy original transcript`.
 
 ```sh
 brew install xcodegen
-git clone https://github.com/SP4C3W0LF/inkfall.git
+git clone https://github.com/wasteland-labs-llc/inkfall.git
 cd inkfall
 xcodegen generate        # creates Inkfall.xcodeproj (gitignored)
 open Inkfall.xcodeproj
