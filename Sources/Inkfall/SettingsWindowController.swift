@@ -77,6 +77,11 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
 
     // General
     private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch Inkfall at login", target: nil, action: nil)
+    private let automaticUpdatesCheckbox = NSButton(checkboxWithTitle: "Check for updates automatically", target: nil, action: nil)
+    /// Nil in a copy that cannot update itself; the switch is then shown disabled.
+    weak var updatePreferences: UpdatePreferences? {
+        didSet { refreshAutomaticUpdatesCheckbox() }
+    }
     private let hudPositionPopup = NSPopUpButton()
     private let dictationModePopup = NSPopUpButton()
     /// Called when the user changes the HUD-position picker, so the app can flash a
@@ -143,6 +148,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        refreshAutomaticUpdatesCheckbox()
         refreshPermissionStatuses()
         startPermissionsTimer()
         if let problem = InkfallConfig.loadProblem {
@@ -258,6 +264,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
 
         launchAtLoginCheckbox.target = self
         launchAtLoginCheckbox.action = #selector(launchAtLoginChanged(_:))
+        automaticUpdatesCheckbox.target = self
+        automaticUpdatesCheckbox.action = #selector(automaticUpdatesChanged(_:))
+        refreshAutomaticUpdatesCheckbox()
 
         hudPositionPopup.removeAllItems()
         hudPositionPopup.addItems(withTitles: HUDPosition.allCases.map(\.displayName))
@@ -269,13 +278,14 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         dictationModePopup.addItems(withTitles: DictationMode.allCases.map(\.displayName))
         dictationModePopup.selectItem(at: DictationMode.allCases.firstIndex(of: config.mode) ?? 0)
 
-        let privacy = SettingsControls.bodyLabel("Everything runs on this Mac. Audio, transcripts, and cleanup never leave the device — the only network use is a model download you start yourself.")
+        let privacy = SettingsControls.bodyLabel("Everything runs on this Mac. Audio, transcripts, and cleanup never leave the device. The only network use is a model download you start yourself and checking for updates.")
 
         return section("General", rows: [
             row("Shortcut", recorder, hint: "Click, then press a modifier + key. Save to apply."),
             row("Dictation", dictationModePopup,
                 hint: "Tap uses the shortcut above, once to start and again to stop. Hold records while you hold the left Option key on its own. Without Accessibility, hold mode uses the shortcut instead."),
             row("Start up", launchAtLoginCheckbox, hint: "Open Inkfall automatically when you log in."),
+            row("Updates", automaticUpdatesCheckbox, hint: Self.automaticUpdatesHint),
             row("Indicator", hudPositionPopup, hint: "Where the status bubble appears while you dictate."),
             SettingsControls.divider(),
             privacy
@@ -673,6 +683,22 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         refreshLaunchAtLoginCheckbox()
     }
 
+    // MARK: Updates
+
+    static let automaticUpdatesHint = "Off, Inkfall looks for a new version only when you choose Check for Updates… in the menu. On, it asks GitHub about once a day."
+
+    @objc private func automaticUpdatesChanged(_ sender: NSButton) {
+        guard let updatePreferences else { return }
+        updatePreferences.checksAutomatically = sender.state == .on
+        refreshAutomaticUpdatesCheckbox()
+    }
+
+    /// Driven from the updater's own stored setting, like the login item above.
+    private func refreshAutomaticUpdatesCheckbox() {
+        automaticUpdatesCheckbox.isEnabled = updatePreferences != nil
+        automaticUpdatesCheckbox.state = updatePreferences?.checksAutomatically == true ? .on : .off
+    }
+
     /// Drive the checkbox from the live OS registration, never a cached Bool, so it
     /// stays honest even if the user flips it in System Settings behind our back.
     private func refreshLaunchAtLoginCheckbox() {
@@ -744,6 +770,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate, NSW
         // The user may have flipped the login item or a permission in System Settings
         // while the window was open; re-read the ground truth on return.
         refreshLaunchAtLoginCheckbox()
+        refreshAutomaticUpdatesCheckbox()
         refreshPermissionStatuses()
     }
 
@@ -1264,6 +1291,8 @@ final class StatusChip: NSView {
 /// window with the longest text it can realistically show, without ordering it on screen.
 extension SettingsWindowController {
     func selectTabForTesting(_ tab: SettingsTab) { select(tab) }
+
+    var automaticUpdatesCheckboxForTesting: NSButton { automaticUpdatesCheckbox }
 
     func fillLongestContentForTesting() {
         for tab in SettingsTab.allCases { _ = paneFor(tab) }

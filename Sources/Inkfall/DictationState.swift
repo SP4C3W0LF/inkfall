@@ -424,6 +424,8 @@ enum StatusMenuEntry: Equatable {
     case copyOriginal(enabled: Bool)
     case chooseShortcut
     case fix(MenuFix)
+    /// "Check for Updates…", or the update a scheduled check found.
+    case updates(title: String)
     case settings
     case quit
     case separator
@@ -443,6 +445,8 @@ struct StatusMenuInput {
     var hasSpeechModel: Bool
     /// The settings file could not be read at launch (see `InkfallConfig.loadProblem`).
     var settingsProblem: String? = nil
+    /// See `UpdateService`. A copy that cannot update itself shows no update item.
+    var updates: UpdateMenuState = .unavailable
 }
 
 enum StatusMenuPlan {
@@ -472,6 +476,7 @@ enum StatusMenuPlan {
             items.append(contentsOf: fixes)
         }
         items.append(.separator)
+        if let title = input.updates.menuTitle { items.append(.updates(title: title)) }
         items.append(.settings)
         items.append(.quit)
         return items

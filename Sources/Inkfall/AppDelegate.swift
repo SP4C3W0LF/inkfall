@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindowController: SettingsWindowController?
     private var onboardingWindowController: OnboardingWindowController?
     private var hudWindowController: DictationHUDWindowController?
+    /// Nil in a copy that cannot update itself (a development build).
+    private var updateService: UpdateService?
     private let normalizer = TranscriptNormalizer()
     private var currentConfig = InkfallConfig.default
     /// What the system said when the shortcut was last registered as the active trigger.
@@ -64,6 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         )
+        // Updates: a menu item and one switch in Settings. Nothing is asked of the network
+        // until the user asks, or turns the switch on.
+        updateService = UpdateService()
+        updateService?.onMenuStateChange = { [weak self] in self?.rebuildMenu() }
+        settingsWindowController?.updatePreferences = updateService
         // Live preview: flash the HUD where the user is pointing while they choose.
         settingsWindowController?.onPreviewHUDPosition = { [weak self] position in
             self?.hudWindowController?.preview(at: position)
@@ -305,7 +312,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             microphoneAuthorized: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
             accessibilityTrusted: AXIsProcessTrusted(),
             hasSpeechModel: currentConfig.hasWhisperConfiguration,
-            settingsProblem: InkfallConfig.loadProblem
+            settingsProblem: InkfallConfig.loadProblem,
+            updates: updateService?.menuState ?? .unavailable
         ))
 
         for entry in plan {
@@ -336,6 +344,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .setUpModel: selector = #selector(showModelSetupMenuItem)
                 }
                 menu.addItem(fixItem(StatusMenuPlan.title(for: kind), selector))
+            case let .updates(title):
+                menu.addItem(fixItem(title, #selector(checkForUpdatesMenuItem)))
             case .settings:
                 let item = fixItem("Settings…", #selector(showSettingsMenuItem))
                 item.keyEquivalent = ","
@@ -411,6 +421,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc nonisolated private func showSettingsMenuItem() {
         Task { @MainActor in self.showSettings() }
+    }
+
+    @objc nonisolated private func checkForUpdatesMenuItem() {
+        Task { @MainActor in self.updateService?.checkForUpdates() }
     }
 
     @objc nonisolated private func showModelSetupMenuItem() {

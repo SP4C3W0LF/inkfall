@@ -11,6 +11,10 @@ packages:
     url: https://github.com/argmaxinc/WhisperKit
     # Pinned to the same version as Package.swift and Package.resolved.
     exactVersion: "1.1.1"
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    # In-app updates. Pinned to the same version as Package.swift and Package.resolved.
+    exactVersion: "2.10.1"
 
 targets:
   Inkfall:
@@ -26,6 +30,8 @@ targets:
     dependencies:
       - package: WhisperKit
         product: WhisperKit
+      - package: Sparkle
+        product: Sparkle
       - sdk: AppKit.framework
       - sdk: AVFoundation.framework
       - sdk: ApplicationServices.framework
@@ -49,6 +55,15 @@ targets:
         # Required so the microphone permission prompt shows a real reason and the
         # grant persists to this app's bundle identifier.
         NSMicrophoneUsageDescription: "Inkfall transcribes your speech into text entirely on this Mac. Audio never leaves your device."
+        # In-app updates (Sparkle). The feed is a file attached to every GitHub release; this
+        # address always resolves to the newest release's copy.
+        SUFeedURL: "https://github.com/wasteland-labs-llc/inkfall/releases/latest/download/appcast.xml"
+        # Public half of the key every update is signed with. The private half is not in any
+        # repository. An update that this key does not verify is refused.
+        SUPublicEDKey: "HW4TOeYthYM4K55vHkeQj3jn4O3ecMLB2DT21HXq/WU="
+        # No check unless the user asks for one or turns the switch on in Settings. Present,
+        # this key also stops Sparkle from asking at the second launch.
+        SUEnableAutomaticChecks: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wasteland.Inkfall

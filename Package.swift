@@ -20,13 +20,16 @@ let package = Package(
     ],
     dependencies: [
         // Pinned: a release must build exactly what was tested. Bump on purpose, with Package.resolved.
-        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "1.1.1")
+        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "1.1.1"),
+        // In-app updates ("Check for Updates…"). Pinned like WhisperKit.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")
     ],
     targets: [
         .executableTarget(
             name: "Inkfall",
             dependencies: [
-                .product(name: "WhisperKit", package: "WhisperKit")
+                .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/Inkfall",
             swiftSettings: [
