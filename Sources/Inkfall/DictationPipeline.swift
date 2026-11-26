@@ -88,8 +88,10 @@ final class DictationPipeline: Sendable {
         }
         // A rewrite that takes too long is not an error: the rule-based text is still good.
         var result = rewritten ?? CleanedTranscript(cleanText: normalizer.finalize(normalized))
-        // A model asked to keep dictated lines apart often leaves them in lower case.
-        if result.cleanText.contains("\n") {
+        // A model asked to keep dictated lines apart often leaves them in lower case. With
+        // the Mac's capitals setting off there is nothing to raise: the policy below lowers
+        // every line start anyway.
+        if context.capitalizeFirstLetter, result.cleanText.contains("\n") {
             result = CleanedTranscript(cleanText: normalizer.capitalizeLineStarts(result.cleanText))
         }
         // Last, so it applies to the model's rewrite and the rule-based text alike.
